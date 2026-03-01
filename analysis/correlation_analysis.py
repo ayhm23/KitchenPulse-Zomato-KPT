@@ -1,19 +1,13 @@
 """
-KitchenPulse — Phase 3: Correlation Analysis & Chart Suite
-============================================================
-Purpose: Generate all analytical charts needed for the PDF proof section.
+Correlation analysis and chart generation for KitchenPulse.
 
-Charts produced:
-  1. Signal correlation heatmap      → which signals predict true KPT best?
-  2. FOR button bias breakdown       → honest vs biased merchant delay distribution
-  3. Hidden load vs rider wait       → proves the hidden load problem is real
-  4. Hourly KLI heatmap              → when is kitchen load highest across restaurants?
-  5. Tier improvement breakdown      → T1 / T2 / T3 MAE reduction bar chart
-  6. Signal accuracy ladder          → ranked MAE of every signal type
-
-All charts saved → report/figures/
-Run:
-    python analysis/correlation_analysis.py
+Produces 6 analytical charts:
+- Signal correlations with true KPT
+- Merchant bias distribution
+- Hidden load impact on wait times
+- Kitchen load heatmap by hour
+- Improvement by tier
+- Signal accuracy comparison
 """
 
 import pandas as pd
