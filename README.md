@@ -282,55 +282,62 @@ kitchenpulse-zomato-kpt/
 
 ```mermaid
 graph TD
-    A["🗄️ synthetic_orders.csv<br/>17,594 orders<br/>50 restaurants"] --> B["🔧 signal_denoiser.py<br/>Signal Processing Layer"]
+    START(["📋 START<br/>Raw Order Data"]) --> DENOISE["🔧 SIGNAL DENOISING<br/>pipeline/signal_denoiser.py<br/>(Remove merchant bias)"]
     
-    B --> B1["Flag Rider-Proximate<br/>FOR events"]
-    B --> B2["Learn merchant<br/>bias offsets"]
-    B --> B3["Apply FOR<br/>correction"]
-    B --> B4["Compute POS-based<br/>KPT signal"]
+    DENOISE --> D1["✓ Detect rider-proximate delays"]
+    DENOISE --> D2["✓ Learn per-merchant bias"]
+    DENOISE --> D3["✓ Correct FOR timestamps"]
     
-    B1 & B2 & B3 & B4 --> C["🎯 kitchen_load_index.py<br/>Kitchen Load Calculation"]
+    D1 & D2 & D3 --> KLI["🎯 KITCHEN LOAD INDEX<br/>pipeline/kitchen_load_index.py<br/>(Real-time load scoring)"]
     
-    C --> C1["Normalize<br/>4 components:<br/>• Zomato concurrency<br/>• Acceptance latency<br/>• Foot traffic<br/>• Competitor orders"]
+    KLI --> K1["ZomatoConcurrency<br/>30% weight"]
+    KLI --> K2["LatencyZScore<br/>25% weight"]
+    KLI --> K3["FootTraffic<br/>30% weight"]
+    KLI --> K4["CompetitorOrders<br/>15% weight"]
     
-    C1 --> C2["Compute KLI<br/>Weighted Index<br/>0–100 scale"]
+    K1 & K2 & K3 & K4 --> COMBINE["⚡ COMBINE SIGNALS<br/>(Weighted Fusion)<br/>Output: KLI Score 0-100"]
     
-    C2 --> C3["Tiered Routing<br/>T1: POS signal<br/>T2/T3: De-biased FOR"]
+    COMBINE --> ADJUST["🎛️ APPLY KLI ADJUSTMENT<br/>Phase 1: De-biased FOR baseline<br/>Phase 2: KLI ±25% modifier"]
     
-    C3 --> C4["Apply KLI<br/>Adjustment<br/>±25% modifier"]
+    ADJUST --> OUTPUT["💾 ENRICHED DATASET<br/>data/processed_orders.csv<br/>All signals + predictions"]
     
-    C4 --> D["💾 processed_orders.csv<br/>Enriched dataset<br/>with all signals"]
+    OUTPUT --> EVAL{{"📊 EVALUATION<br/>(Choose path)"}}"
     
-    D --> E["⚖️ run_simulation.py<br/>Strategy Comparison"]
-    E --> E1["Strategy A: Baseline<br/>Zomato today"]
-    E --> E2["Strategy B: Denoised FOR<br/>Bias corrected"]
-    E --> E3["Strategy C: KitchenPulse<br/>Full system"]
+    EVAL -->|Simulation| SIM["⚖️ RUN_SIMULATION.PY<br/>3-Way Strategy Comparison"]
+    SIM --> COMP["Strategy A: Baseline<br/>Strategy B: Denoised<br/>Strategy C: KitchenPulse"]
+    COMP --> CHART1["📈 simulation_results.png<br/>Metrics: MAE | Wait | Tier<br/><br/>Result: +44.2% improvement"]
     
-    E1 & E2 & E3 --> F["📊 simulation_results.png<br/>5-panel dashboard<br/>MAE | Wait | Tier"]
+    EVAL -->|Analysis| CORR["🔍 CORRELATION_ANALYSIS.PY<br/>6 Statistical Charts"]
+    CORR --> CHARTS["Chart 1-6:<br/>Heatmaps | Trends | Rankings<br/>Impact analysis"]
+    CHARTS --> CHART2["📊 report/figures/<br/>Publication-ready graphics"]
     
-    D --> G["🔍 correlation_analysis.py<br/>Statistical Analysis Layer"]
+    EVAL -->|Robustness| ROBUST["🧪 ROBUSTNESS_TESTS.PY<br/>3 Validation Tests"]
+    ROBUST --> TESTS["Test 1: Bootstrap CI 2,000×<br/>Test 2: Ablation (drop signals)<br/>Test 3: OOD load sweep"]
+    TESTS --> CHART3["✅ ablation_results.png<br/>ood_stress_test.png<br/>Confidence intervals shown"]
     
-    G --> G1["Chart 1: Correlation<br/>heatmap"]
-    G --> G2["Chart 3: Hidden load<br/>impact"]
-    G --> G3["Chart 4: Hourly KLI<br/>heatmap"]
-    G --> G4["Chart 5: Tier<br/>improvement"]
-    G --> G5["Chart 6: Signal<br/>accuracy ladder"]
+    CHART1 & CHART2 & CHART3 --> END(["🎉 COMPLETE<br/>Validated & Ready"])
     
-    G1 & G2 & G3 & G4 & G5 --> H["📈 PDF Report Ready<br/>6 publication charts<br/>+ statistics"]
+    classDef input fill:#e1f5ff,stroke:#01579b,stroke-width:3px,color:#000
+    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef output fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
+    classDef analysis fill:#c8e6c9,stroke:#1b5e20,stroke-width:2px,color:#000
+    classDef result fill:#ffccbc,stroke:#bf360c,stroke-width:2px,color:#000
+    classDef decision fill:#f0f4c3,stroke:#9c27b0,stroke-width:3px,color:#000
     
-    D --> I["🧪 robustness_tests.py<br/>Validation Layer"]
-    I --> I1["Bootstrap CI<br/>2,000 resamples"]
-    I --> I2["Ablation study<br/>Drop each signal"]
-    I --> I3["OOD stress test<br/>Load multiplier sweep"]
-    
-    I1 & I2 & I3 --> J["✅ Robustness Assurance<br/>ablation_results.png<br/>ood_stress_test.png"]
-    
-    style A fill:#e1f5ff
-    style D fill:#fff9c4
-    style F fill:#f3e5f5
-    style H fill:#c8e6c9
-    style J fill:#ffccbc
+    class START,OUTPUT input
+    class DENOISE,KLI,COMBINE,ADJUST process
+    class D1,D2,D3,K1,K2,K3,K4 process
+    class CHART1,CHART2,CHART3 output
+    class SIM,COMP,CORR,CHARTS,ROBUST,TESTS analysis
+    class END result
+    class EVAL decision
 ```
+
+**Key Metrics by Stage:**
+- 🔧 **Denoising:** Removes avg 7.09 min merchant bias
+- 🎯 **KLI:** Scores kitchen load 0-100 in real-time
+- ⚡ **Fusion:** Combines 4 signals (correlation: +0.383)
+- 📊 **Result:** **+44.2% KPT accuracy improvement** (6.55m → 3.66m MAE)
 
 ---
 
