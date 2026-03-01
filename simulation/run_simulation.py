@@ -197,20 +197,23 @@ def run(inject_noise: bool = True) -> pd.DataFrame:
     print("  KitchenPulse — Signal Pipeline Simulation")
     print("=" * 65)
 
-    # ── Strategy 1: Baseline (raw FOR signal) ─────────────────────────────
+    # ── Strategy 1: Baseline (naive POS estimate) ────────────────────────
+    # The baseline is the naive_kpt_estimate from the dataset
+    # (what Zomato's initial model would predict without KitchenPulse)
+    
     df['raw_kpt'] = (
         pd.to_datetime(df['for_button_time'])
         - pd.to_datetime(df['order_time'])
     ).dt.total_seconds() / 60
 
-    baseline_mae = mean_absolute_error(df['raw_kpt'], df['true_kpt_minutes'])
+    baseline_mae = mean_absolute_error(df['naive_kpt_estimate'], df['true_kpt_minutes'])
 
     print(f"\n{'─'*65}")
     print("  RESULTS (lower MAE = better)")
     print(f"{'─'*65}")
 
     results = []
-    results.append(print_strategy_row("1. Baseline (raw FOR)", df, 'raw_kpt', baseline_mae))
+    results.append(print_strategy_row("1. Baseline (naive POS estimate)", df, 'naive_kpt_estimate', baseline_mae))
 
     # ── Strategy 2: Denoised FOR (static median, no KLI) ──────────────────
     df_d = flag_rider_proximate_events(df)
@@ -244,7 +247,7 @@ def run(inject_noise: bool = True) -> pd.DataFrame:
         ).dt.total_seconds() / 60
 
         adv_baseline_mae = mean_absolute_error(
-            df_adv['raw_kpt'], df_adv['true_kpt_minutes']
+            df_adv['naive_kpt_estimate'], df_adv['true_kpt_minutes']
         )
         print(f"\n  Adversarial baseline MAE: {adv_baseline_mae:.2f}m "
               f"(vs clean baseline: {baseline_mae:.2f}m)")
@@ -263,7 +266,7 @@ def run(inject_noise: bool = True) -> pd.DataFrame:
         results.append(
             print_strategy_row(
                 "5a. Baseline (adversarial data)",
-                df_adv2, 'raw_kpt', adv_baseline_mae
+                df_adv2, 'naive_kpt_estimate', adv_baseline_mae
             )
         )
         results.append(

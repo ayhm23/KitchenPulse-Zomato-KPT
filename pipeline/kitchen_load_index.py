@@ -114,17 +114,17 @@ def select_strategy(df: pd.DataFrame) -> WeightingStrategy:
     """
     Inspect the dataframe and return the appropriate weighting strategy.
 
-    Triggers FallbackWeightingStrategy when > 20% of foot_traffic_index
+    Triggers FallbackWeightingStrategy when > 20% of local_foot_traffic_index
     values in this batch are null — indicating the external API is offline.
     """
-    if 'foot_traffic_index' not in df.columns:
-        print("[KLI] foot_traffic_index column absent → using FallbackWeightingStrategy")
+    if 'local_foot_traffic_index' not in df.columns:
+        print("[KLI] local_foot_traffic_index column absent → using FallbackWeightingStrategy")
         return FallbackWeightingStrategy()
 
-    null_rate = df['foot_traffic_index'].isna().mean()
+    null_rate = df['local_foot_traffic_index'].isna().mean()
     if null_rate > 0.20:
         print(
-            f"[KLI] foot_traffic_index null rate = {null_rate:.1%} "
+            f"[KLI] local_foot_traffic_index null rate = {null_rate:.1%} "
             f"(> 20% threshold) → using FallbackWeightingStrategy"
         )
         return FallbackWeightingStrategy()
@@ -198,8 +198,8 @@ def compute_kli(df: pd.DataFrame) -> pd.DataFrame:
     concurrent_norm  = df['concurrent_orders'].clip(0, 15).div(15)
 
     # Foot traffic — handle missing values (fill with 0.5 = neutral baseline)
-    if 'foot_traffic_index' in df.columns:
-        foot_norm = df['foot_traffic_index'].fillna(50).clip(0, 100).div(100)
+    if 'local_foot_traffic_index' in df.columns:
+        foot_norm = df['local_foot_traffic_index'].fillna(50).clip(0, 100).div(100)
     else:
         foot_norm = pd.Series(0.5, index=df.index)   # neutral baseline
 
