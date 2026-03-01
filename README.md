@@ -10,32 +10,32 @@ A scalable signal-enrichment pipeline that improves Zomato's kitchen preparation
 
 ## 🎯 V2 Branch — Advanced Features & Bug Fixes
 
-**Latest Release (V2):** Production-ready enhancements with critical bug fixes.
+Latest production updates with new capabilities and bug fixes.
 
 ### V2 Features Implemented
-1. **[Feature 1] Adversarial Noise Injection** — Stress-test pipeline robustness
-   - Randomly injects 8% non-linear anomalies (competitor spikes, merchant delays)
-   - KitchenPulse maintains **30.4% improvement** under adversarial conditions
+1. **Adversarial Noise Injection** — Tests pipeline robustness on bad data
+   - Randomly injects 8% anomalies (competitor spikes, merchant delays)
+   - Maintains 30.4% improvement even under adverse conditions
    - File: `simulation/run_simulation.py`
 
-2. **[Feature 2] Variance-Gated Threshold** — Guard against over-correction
-   - Suppresses EMA offset when merchant variance exceeds 180 seconds
-   - Prevents signal degradation for chaotic merchants
+2. **Variance-Gated Threshold** — Smart bias correction
+   - Skips bias correction when merchant delays are too erratic (not gaming)
+   - Prevents over-correction for chaotic operations
    - File: `pipeline/signal_denoiser.py`
 
-3. **[Feature 3] EMA-Based Adaptive Denoising** — Smooth signal trends
-   - Exponential moving average reduces jitter in FOR detection
-   - Improves performance by **42.7%** vs static median baseline
+3. **EMA-Based Adaptive Denoising** — Handles signal drift
+   - Exponential moving average instead of static median
+   - Adapts as merchant behavior changes over time
    - File: `pipeline/signal_denoiser.py`
 
-4. **[Feature 4] Dynamic KLI Weighting (Strategy Pattern)** — Context-aware signal fusion
-   - DefaultWeightingStrategy: standard weights (30% concurrent, 25% latency, 30% foot_traffic, 15% competitor)
-   - FallbackWeightingStrategy: graceful degradation when external APIs offline
+4. **Dynamic KLI Weighting** — Fallback signal strategy
+   - Uses standard weights when foot traffic data is available
+   - Graceful degradation when external data sources are offline
    - File: `pipeline/kitchen_load_index.py`
 
-5. **[Feature 5] POS Adapters (Webhook Normalization)** — Multi-vendor support
-   - Normalizes Petpooja & Posist webhook formats into unified schema
-   - Enables T1 merchants to provide direct POS signals (50.1% accuracy improvement)
+5. **POS Webhook Adapters** — Support for multiple vendors
+   - Handles Petpooja and Posist POS systems
+   - Normalizes different formats into standard schema
    - File: `pipeline/pos_adapters.py` (new)
 
 ### V2 Bug Fixes (Critical Data Pipeline Issues)

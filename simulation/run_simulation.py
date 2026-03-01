@@ -1,25 +1,8 @@
 """
-simulation/run_simulation.py
------------------------------
-Before vs after comparison across all pipeline strategies.
+Before vs after comparison across different pipeline strategies.
 
-Original logic (preserved):
-  - Baseline: raw FOR button signal into naive KPT
-  - Denoised FOR: bias-corrected FOR signal, no KLI
-  - KitchenPulse (Full): corrected FOR + KLI-adjusted KPT
-
-New additions (v2):
-  [Feature 1] Adversarial Noise Injection
-    inject_adversarial_noise() randomly corrupts a configurable fraction
-    of rows in the dataset with extreme, non-linear anomalies:
-      - Massive spikes in competitor_orders (uncorrelated with true_kpt)
-      - Random 20-minute FOR delays for otherwise 'honest' merchants
-
-    The simulation runs FOUR strategies: Baseline, Denoised FOR,
-    KitchenPulse (Full), and KitchenPulse under adversarial conditions,
-    demonstrating the system's fault tolerance.
-
-  [Feature 4] EMA strategy is also benchmarked alongside the static median.
+Tests baseline naive model, denoised FOR timestamps, KitchenPulse with
+full signal fusion, and the system's handling of bad data.
 """
 
 from __future__ import annotations
@@ -43,46 +26,17 @@ from pipeline.kitchen_load_index import (
 )
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────────────────────────────────────
-
-ADVERSARIAL_FRACTION: float = 0.08   # 8% of rows get adversarial noise
-RANDOM_SEED: int = 99
+ADVERSARIAL_FRACTION = 0.08
+RANDOM_SEED = 99
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# [Feature 1] Adversarial noise injection
-# ──────────────────────────────────────────────────────────────────────────────
-
-def inject_adversarial_noise(
-    df: pd.DataFrame,
-    fraction: float = ADVERSARIAL_FRACTION,
-    seed: int = RANDOM_SEED,
-) -> pd.DataFrame:
+def inject_adversarial_noise(df, fraction=ADVERSARIAL_FRACTION, seed=RANDOM_SEED):
     """
-    [Feature 1: Adversarial Noise Injection]
-
-    Randomly injects two categories of extreme non-linear anomalies into
-    a `fraction` of rows to stress-test pipeline fault tolerance:
-
-    Type A — Competitor order spike (uncorrelated garbage):
-      Sets competitor_orders to a massive value (50–200) that has NO
-      relationship with true_kpt_minutes. A naive model would be badly
-      misled; a robust pipeline should absorb this gracefully.
-
-    Type B — Honest merchant FOR delay flip:
-      For rows from 'honest' merchants (rider_present_at_press == False),
-      injects a random 18–22 minute delay into for_button_time, simulating
-      a day where even an otherwise honest merchant gaming the system.
-      This is deliberately non-linear: the delay is sampled from a heavy-
-      tailed distribution rather than the Gaussian used for normal bias.
-
-    Both types are flagged in a new column `adversarial_noise_type` for
-    post-hoc analysis of where the pipeline succeeded or failed.
-
-    Returns:
-        A copy of df with adversarial rows mutated in-place.
+    Add some bad data to test robustness.
+    
+    Two types of anomalies:
+    - Competitor order spikes (unrelated to true KPT)
+    - Random FOR delays for honest merchants
     """
     rng = np.random.default_rng(seed)
     df = df.copy()

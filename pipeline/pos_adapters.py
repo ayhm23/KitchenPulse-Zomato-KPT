@@ -1,15 +1,8 @@
 """
-pipeline/pos_adapters.py
-------------------------
-Adapter design pattern for normalizing disparate Tier-1 POS webhook payloads
-into a single canonical ZomatoKPTSchema before the signal passes to the main
-pipeline.
+Adapter pattern for normalizing POS webhook payloads from different vendors.
 
-Two concrete adapters are implemented:
-  - PetpoojaAdapter  (Petpooja POS webhook format)
-  - PosistAdapter    (Posist / POSist webhook format)
-
-Both implement the POSGateway interface and output a ZomatoKPTSchema dict.
+Handles Petpooja and Posist formats and converts them to a standard schema.
+Allows new POS systems to be added without changing the pipeline code.
 """
 
 from __future__ import annotations
@@ -26,10 +19,7 @@ from typing import Any, Optional
 
 @dataclass
 class ZomatoKPTSchema:
-    """
-    Canonical representation of a kitchen-ready signal after POS normalisation.
-    This is what every adapter must produce before handing off to the pipeline.
-    """
+    """Canonical POS signal format. All adapters output this."""
     restaurant_id: str
     order_id: str
     ticket_cleared_at: datetime        # when the KOT was closed — ground truth
@@ -41,10 +31,7 @@ class ZomatoKPTSchema:
 
     @property
     def pos_kpt_minutes(self) -> float:
-        """
-        Kitchen Preparation Time as measured purely from POS timestamps.
-        This is the clean, human-independent signal used for Tier 1 merchants.
-        """
+        """KPT computed directly from POS timestamps."""
         delta = self.ticket_cleared_at - self.order_placed_at
         return round(delta.total_seconds() / 60, 2)
 
@@ -61,36 +48,16 @@ class ZomatoKPTSchema:
         }
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Abstract gateway interface
-# ──────────────────────────────────────────────────────────────────────────────
-
 class POSGateway(abc.ABC):
-    """
-    Abstract base class (interface) for all POS adapters.
-
-    Any new POS integration (DotPe, Torqus, etc.) must subclass this and
-    implement `normalize`. The rest of the pipeline never touches raw POS
-    payloads directly.
-    """
+    """Interface for POS adapters."""
 
     @abc.abstractmethod
     def normalize(self, raw_payload: dict[str, Any]) -> ZomatoKPTSchema:
-        """
-        Accept a raw webhook payload in the vendor's native format and return
-        a normalised ZomatoKPTSchema instance.
-
-        Raises:
-            KeyError:   if a required field is missing from the payload.
-            ValueError: if a timestamp cannot be parsed.
-        """
+        """Convert raw POS payload to standard schema."""
 
     @staticmethod
     def _parse_dt(value: Any, fmt: Optional[str] = None) -> datetime:
-        """
-        Helper: parse a datetime from either a string with a known format,
-        an ISO-8601 string, or a Unix timestamp (int/float).
-        """
+        """Parse datetime from string, Unix timestamp, or datetime object."""
         if isinstance(value, datetime):
             return value
         if isinstance(value, (int, float)):

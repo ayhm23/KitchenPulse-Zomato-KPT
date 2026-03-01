@@ -1,25 +1,9 @@
 """
-pipeline/signal_denoiser.py
----------------------------
-FOR button bias detection and correction layer.
+FOR button bias detection and correction.
 
-Original logic (preserved):
-  - flag_rider_proximate_events()  — identifies biased FOR presses
-  - compute_bias_correction()      — per-merchant median offset
-  - apply_correction()             — subtracts offset from biased timestamps
-
-New additions (v2):
-  [Feature 3] Variance-Gated Threshold
-    compute_bias_correction() now calculates σ of each merchant's RP-FOR
-    delays. The offset is ONLY applied when σ < SIGMA_THRESHOLD, i.e. the
-    delay is a consistent habit rather than random kitchen chaos.
-
-  [Feature 4] EMA for Data-Drift Mitigation
-    apply_ema_offset() replaces the static median with an online EMA so the
-    denoiser adapts as merchants change behavior (e.g., after early dispatch
-    training makes them start pressing FOR earlier).
-    Formula: EMA_t = α * x_t + (1 - α) * EMA_{t-1}
-    α = 0.3  (≈ 7-day half-life at typical order rates)
+Detects when merchants press the food-ready button after the rider arrives
+(rider-proximate bias) and corrects for it. Also handles adaptive smoothing
+for merchants who change their behavior over time.
 """
 
 from __future__ import annotations
@@ -27,30 +11,15 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Configuration constants
-# ──────────────────────────────────────────────────────────────────────────────
+# Only apply bias correction when delay is consistent (not chaotic)
+SIGMA_THRESHOLD = 180.0  # seconds (3 min threshold for variance)
 
-# [Feature 3] Only apply the bias offset when σ of RP-FOR delays is below
-# this threshold (seconds).  A high σ means chaotic operations, not gaming.
-SIGMA_THRESHOLD: float = 180.0   # 3 minutes
+# EMA smoothing for adaptive denoising
+EMA_ALPHA = 0.3
 
-# [Feature 4] EMA smoothing factor. 0.3 gives a ~7-day effective memory at
-# ~10 orders/day. Lower α = longer memory; higher α = faster adaptation.
-EMA_ALPHA: float = 0.3
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Original Layer 1 functions (preserved exactly)
-# ──────────────────────────────────────────────────────────────────────────────
 
 def flag_rider_proximate_events(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Flag FOR events where the rider was already present — these are biased.
-    Adds columns:
-      - for_bias_flag      (bool)
-      - for_delay_seconds  (float) — how late vs actual_ready_time
-    """
+    """Identify FOR presses that happened after rider arrived."""
     df = df.copy()
     df['for_bias_flag'] = df['rider_present_at_press'].astype(bool)
 
@@ -63,22 +32,7 @@ def flag_rider_proximate_events(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_bias_correction(df: pd.DataFrame) -> pd.Series:
-    """
-    [AUGMENTED — Feature 3: Variance-Gated Threshold]
-
-    Per-merchant: learn the bias offset from flagged (rider-proximate) events.
-    Original behaviour: return the median delay per merchant as the offset.
-
-    New behaviour:
-      1. Also compute σ of each merchant's RP-FOR delays.
-      2. If σ >= SIGMA_THRESHOLD, the merchant's operations are chaotic
-         (not gaming); set their offset to 0 so we don't over-correct.
-      3. If σ < SIGMA_THRESHOLD, the delay is a consistent habit — apply
-         the median offset as before.
-
-    Returns a Series indexed by restaurant_id with the effective
-    bias_offset_seconds (0 for high-variance merchants).
-    """
+    """Learn per-merchant bias offset, but skip if delays are too variable."""
     biased = df[df['for_bias_flag'] == True]
 
     stats = biased.groupby('restaurant_id')['for_delay_seconds'].agg(
@@ -86,35 +40,24 @@ def compute_bias_correction(df: pd.DataFrame) -> pd.Series:
         sigma='std'
     )
 
-    # Gate: zero out the offset for chaotic merchants
+    # Don't apply correction if variance is high (means operations are chaotic)
     stats['sigma'] = stats['sigma'].fillna(0.0)
     stats['bias_offset_seconds'] = np.where(
         stats['sigma'] < SIGMA_THRESHOLD,
         stats['median_offset'],
-        0.0   # high variance → do not apply correction
+        0.0
     )
 
-    # Log which merchants were gated for transparency
+    # Log which merchants had too much variance
     gated = stats[stats['sigma'] >= SIGMA_THRESHOLD]
     if not gated.empty:
-        print(
-            f"[Denoiser] Variance gate triggered for "
-            f"{len(gated)} merchant(s) with σ ≥ {SIGMA_THRESHOLD}s — "
-            f"offset suppressed: {gated.index.tolist()}"
-        )
+        print(f"Skipping correction for {len(gated)} merchants (high variance): {gated.index.tolist()}")
 
     return stats['bias_offset_seconds']
 
 
 def apply_correction(df: pd.DataFrame, offsets: pd.Series) -> pd.DataFrame:
-    """
-    Subtract the learned bias offset from flagged FOR timestamps.
-    Adds columns:
-      - bias_offset_seconds
-      - corrected_for_time
-      - corrected_kpt       (minutes, corrected)
-      - raw_kpt             (minutes, uncorrected)
-    """
+    """Apply the bias correction to FOR timestamps."""
     df = df.merge(offsets.rename('bias_offset_seconds'), on='restaurant_id',
                   how='left')
     df['bias_offset_seconds'] = df['bias_offset_seconds'].fillna(0)

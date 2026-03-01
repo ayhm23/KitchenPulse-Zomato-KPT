@@ -1,23 +1,9 @@
 """
-pipeline/kitchen_load_index.py
-------------------------------
-Kitchen Load Index (KLI) computation from 4 signal sources.
+Kitchen Load Index (KLI) computation.
 
-Original logic (preserved):
-  - compute_acceptance_latency_zscore()  — z-score of merchant response time
-  - compute_concurrent_order_pressure()  — rolling window concurrency count
-  - compute_kli()                        — static weighted combination → 0–100
-
-New additions (v2):
-  [Feature 2] Dynamic KLI Weighting via Strategy Design Pattern
-    A WeightingStrategy base class and two concrete strategies:
-      - DefaultWeightingStrategy   — original static 30/25/30/15 weights
-      - FallbackWeightingStrategy  — redistributes foot_traffic_index weight
-        (30%) to zomato_concurrent_orders and acceptance_latency when the
-        foot traffic signal is null or stale.
-
-    compute_kli() now detects null/stale foot_traffic_index values and
-    automatically selects the appropriate strategy.
+Combines order concurrency, acceptance latency, foot traffic, and competitor
+order volume into a single 0-100 kitchen load score. Uses strategy pattern
+to handle missing foot traffic data gracefully.
 """
 
 from __future__ import annotations
@@ -28,10 +14,6 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# [Feature 2] Strategy pattern for KLI signal weighting
-# ──────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class KLIWeights:
