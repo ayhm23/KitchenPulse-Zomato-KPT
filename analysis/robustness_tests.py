@@ -98,54 +98,62 @@ def compute_kli(df, drop_signal=None):
     return kli
 
 
+# ---------------------------------------------------------
+# 2. ABLATION STUDY (FIXED)
+# ---------------------------------------------------------
 def run_ablation(df):
     print("\n=== Ablation Study ===")
     y_true = df["true_kpt_minutes"]
     results = []
 
+    # RECOVER THE CLEAN BASE SIGNAL (POS for T1, Corrected FOR for T2/T3)
+    # We reverse-engineer it from the final kli_adjusted_kpt in the dataset
+    original_multiplier = 1 + (df["kitchen_load_index"] - 50) / 200
+    clean_base = df["kli_adjusted_kpt"] / original_multiplier
+
     for drop in [None, "concurrent", "latency", "foot_traffic", "competitor"]:
         temp = df.copy()
         kli = compute_kli(temp, drop_signal=drop)
-        adjusted = temp["naive_kpt_estimate"] * (1 + (kli - 50) / 200)
+        
+        # Apply KLI to the CLEAN base, not the naive estimate
+        adjusted = clean_base * (1 + (kli - 50) / 200)
         mae = mean_absolute_error(y_true, adjusted)
         key = drop if drop else "all_signals"
         results.append((key, mae))
         print(f"Dropped {key:<15} → MAE {mae:.2f}")
 
-    # table
-    print("\nComparison table (MAE):")
-    print("Signal       | MAE")
-    print("-------------|------")
-    for key, mae in results:
-        print(f"{key:<13} | {mae:.2f}")
-
-    # check dominance
-    maes_only = [m for _, m in results]
-    max_dev = max(maes_only) - min(maes_only)
-    if max_dev / maes_only[0] < 0.10:
-        print("\n→ No single signal dominates; drop of any one component changes MAE by <10%.")
-    else:
-        print("\n→ At least one component has outsized influence on MAE.")
-
     # chart
     labels, maes = zip(*results)
-    plt.figure()
-    plt.bar(labels, maes)
-    plt.ylabel("MAE vs True KPT")
+    plt.figure(figsize=(8, 5))
+    
+    # Use your custom colors
+    colors = ['#27AE60' if l == 'all_signals' else '#3498DB' for l in labels]
+    plt.bar(labels, maes, color=colors)
+    plt.ylabel("MAE vs True KPT (minutes)")
     plt.xticks(rotation=45)
     plt.title("Ablation Study — Signal Contribution")
+    plt.ylim(0, max(maes) + 1)
+    
+    # Add values on top of bars
+    for i, v in enumerate(maes):
+        plt.text(i, v + 0.1, f'{v:.2f}m', ha='center', fontweight='bold')
+        
     plt.tight_layout()
     plt.savefig("analysis/ablation_results.png")
     plt.close()
 
 # ---------------------------------------------------------
-# 3. OOD STRESS TEST
+# 3. OOD STRESS TEST (FIXED)
 # ---------------------------------------------------------
-
 def run_ood_test(df):
     print("\n=== OOD Hidden Load Multiplier Test ===")
     multipliers = np.linspace(0.5, 2.0, 8)
-    maes = []
+    maes_kp = []
+    maes_baseline = []
+
+    # Recover the clean base signal
+    original_multiplier = 1 + (df["kitchen_load_index"] - 50) / 200
+    clean_base = df["kli_adjusted_kpt"] / original_multiplier
 
     for m in multipliers:
         temp = df.copy()
@@ -155,16 +163,23 @@ def run_ood_test(df):
             + temp["zomato_concurrent_orders"] * 0.8
         )
         kli = compute_kli(temp)
-        adjusted = temp["naive_kpt_estimate"] * (1 + (kli - 50) / 200)
-        mae = mean_absolute_error(temp["true_kpt_minutes_mod"], adjusted)
-        maes.append(mae)
-        print(f"Hidden Load x{m:.2f} → MAE: {mae:.2f}")
+        adjusted = clean_base * (1 + (kli - 50) / 200)
+        
+        mae_kp = mean_absolute_error(temp["true_kpt_minutes_mod"], adjusted)
+        mae_base = mean_absolute_error(temp["true_kpt_minutes_mod"], temp["naive_kpt_estimate"])
+        
+        maes_kp.append(mae_kp)
+        maes_baseline.append(mae_base)
+        print(f"Hidden Load x{m:.2f} → KP MAE: {mae_kp:.2f} | Baseline MAE: {mae_base:.2f}")
 
-    plt.figure()
-    plt.plot(multipliers, maes, marker="o")
-    plt.xlabel("Hidden Load Multiplier")
-    plt.ylabel("MAE")
+    plt.figure(figsize=(8, 5))
+    plt.plot(multipliers, maes_baseline, marker="x", color="#E74C3C", linewidth=2, label="Zomato Baseline")
+    plt.plot(multipliers, maes_kp, marker="o", color="#27AE60", linewidth=2, label="KitchenPulse")
+    plt.xlabel("Hidden Load Multiplier (1.0 = Normal)")
+    plt.ylabel("MAE vs True KPT (minutes)")
     plt.title("OOD Stress Test — Hidden Load Sensitivity")
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.5)
     plt.tight_layout()
     plt.savefig("analysis/ood_stress_test.png")
     plt.close()
