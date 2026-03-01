@@ -295,49 +295,48 @@ graph TD
     KLI --> K3["FootTraffic<br/>30% weight"]
     KLI --> K4["CompetitorOrders<br/>15% weight"]
     
-    K1 & K2 & K3 & K4 --> COMBINE["⚡ COMBINE SIGNALS<br/>(Weighted Fusion)<br/>Output: KLI Score 0-100"]
+    K1 & K2 & K3 & K4 --> COMBINE["⚡ COMBINE SIGNALS<br/>Weighted Fusion<br/>KLI Score 0-100"]
     
-    COMBINE --> ADJUST["🎛️ APPLY KLI ADJUSTMENT<br/>Phase 1: De-biased FOR baseline<br/>Phase 2: KLI ±25% modifier"]
+    COMBINE --> ADJUST["🎛️ APPLY KLI ADJUSTMENT<br/>De-biased FOR + KLI modifier"]
     
-    ADJUST --> OUTPUT["💾 ENRICHED DATASET<br/>data/processed_orders.csv<br/>All signals + predictions"]
+    ADJUST --> OUTPUT["💾 ENRICHED DATASET<br/>data/processed_orders.csv"]
     
-    OUTPUT --> EVAL{{"📊 EVALUATION<br/>(Choose path)"}}"
+    OUTPUT --> EVAL["📊 EVALUATION PATH<br/>Choose Analysis Type"]
     
-    EVAL -->|Simulation| SIM["⚖️ RUN_SIMULATION.PY<br/>3-Way Strategy Comparison"]
-    SIM --> COMP["Strategy A: Baseline<br/>Strategy B: Denoised<br/>Strategy C: KitchenPulse"]
-    COMP --> CHART1["📈 simulation_results.png<br/>Metrics: MAE | Wait | Tier<br/><br/>Result: +44.2% improvement"]
+    EVAL -->|Simulation| SIM["⚖️ run_simulation.py<br/>3-Way Strategy"]
+    SIM --> CHART1["📈 simulation_results.png<br/>+44.2% improvement"]
     
-    EVAL -->|Analysis| CORR["🔍 CORRELATION_ANALYSIS.PY<br/>6 Statistical Charts"]
-    CORR --> CHARTS["Chart 1-6:<br/>Heatmaps | Trends | Rankings<br/>Impact analysis"]
-    CHARTS --> CHART2["📊 report/figures/<br/>Publication-ready graphics"]
+    EVAL -->|Analysis| CORR["🔍 correlation_analysis.py<br/>6 Statistical Charts"]
+    CORR --> CHART2["📊 report/figures/<br/>Publication-ready graphics"]
     
-    EVAL -->|Robustness| ROBUST["🧪 ROBUSTNESS_TESTS.PY<br/>3 Validation Tests"]
-    ROBUST --> TESTS["Test 1: Bootstrap CI 2,000×<br/>Test 2: Ablation (drop signals)<br/>Test 3: OOD load sweep"]
-    TESTS --> CHART3["✅ ablation_results.png<br/>ood_stress_test.png<br/>Confidence intervals shown"]
+    EVAL -->|Robustness| ROBUST["🧪 robustness_tests.py<br/>Bootstrap + Ablation + OOD"]
+    ROBUST --> CHART3["✅ ablation_results.png<br/>ood_stress_test.png"]
     
     CHART1 & CHART2 & CHART3 --> END(["🎉 COMPLETE<br/>Validated & Ready"])
     
-    classDef input fill:#e1f5ff,stroke:#01579b,stroke-width:3px,color:#000
-    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
-    classDef output fill:#fff9c4,stroke:#f57f17,stroke-width:2px,color:#000
-    classDef analysis fill:#c8e6c9,stroke:#1b5e20,stroke-width:2px,color:#000
-    classDef result fill:#ffccbc,stroke:#bf360c,stroke-width:2px,color:#000
-    classDef decision fill:#f0f4c3,stroke:#9c27b0,stroke-width:3px,color:#000
+    classDef input fill:#e1f5ff,stroke:#0277bd,stroke-width:3px
+    classDef process fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    classDef output fill:#fff9c4,stroke:#f57f17,stroke-width:2px
+    classDef analysis fill:#c8e6c9,stroke:#1b5e20,stroke-width:2px
+    classDef result fill:#ffccbc,stroke:#bf360c,stroke-width:2px
     
-    class START,OUTPUT input
+    class START,END input
+    class OUTPUT analysis
     class DENOISE,KLI,COMBINE,ADJUST process
     class D1,D2,D3,K1,K2,K3,K4 process
-    class CHART1,CHART2,CHART3 output
-    class SIM,COMP,CORR,CHARTS,ROBUST,TESTS analysis
-    class END result
-    class EVAL decision
+    class SIM,CORR,ROBUST analysis
+    class CHART1,CHART2,CHART3 result
+    class EVAL analysis
 ```
 
 **Key Metrics by Stage:**
-- 🔧 **Denoising:** Removes avg 7.09 min merchant bias
-- 🎯 **KLI:** Scores kitchen load 0-100 in real-time
-- ⚡ **Fusion:** Combines 4 signals (correlation: +0.383)
-- 📊 **Result:** **+44.2% KPT accuracy improvement** (6.55m → 3.66m MAE)
+| Stage | Impact |
+|-------|--------|
+| 🔧 **Signal Denoising** | Removes avg **7.09 min** merchant bias |
+| 🎯 **KLI Computation** | Real-time load scoring **0-100** |
+| ⚡ **Signal Fusion** | Combines 4 signals (correlation: **+0.383**) |
+| 📊 **Final Result** | **+44.2%** KPT accuracy (6.55m → 3.66m MAE) |
+
 
 ---
 
