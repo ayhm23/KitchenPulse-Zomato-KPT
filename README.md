@@ -1,108 +1,60 @@
-# KitchenPulse — Zomato Kitchen Preparation Time Signal Enrichment System
+# KitchenPulse — Zomato Kitchen Preparation Time Prediction
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![Pandas](https://img.shields.io/badge/Pandas-1.3+-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-A scalable signal-enrichment pipeline that improves Zomato's kitchen preparation time (KPT) predictions by **44.2%** through intelligent de-noising of biased signals and introduction of hidden-load proxies.
+A signal-enrichment pipeline that improves Zomato's KPT predictions by **44.2%** by removing merchant bias and introducing hidden-load signals.
 
 ---
 
-## 🎯 V2 Branch — Advanced Features & Bug Fixes
+## The Problem
 
-Latest production updates with new capabilities and bug fixes.
+Zomato's KPT predictions depend on a merchant-pressed "Food Ready" (FOR) button that has two critical issues:
 
-### V2 Features Implemented
-1. **Adversarial Noise Injection** — Tests pipeline robustness on bad data
-   - Randomly injects 8% anomalies (competitor spikes, merchant delays)
-   - Maintains 30.4% improvement even under adverse conditions
-   - File: `simulation/run_simulation.py`
+### Merchant Bias
+Merchants often delay pressing the FOR button until the rider arrives, adding an average of **7.09 minutes** of delay. This biases all training data for Zomato's ML models.
 
-2. **Variance-Gated Threshold** — Smart bias correction
-   - Skips bias correction when merchant delays are too erratic (not gaming)
-   - Prevents over-correction for chaotic operations
-   - File: `pipeline/signal_denoiser.py`
-
-3. **EMA-Based Adaptive Denoising** — Handles signal drift
-   - Exponential moving average instead of static median
-   - Adapts as merchant behavior changes over time
-   - File: `pipeline/signal_denoiser.py`
-
-4. **Dynamic KLI Weighting** — Fallback signal strategy
-   - Uses standard weights when foot traffic data is available
-   - Graceful degradation when external data sources are offline
-   - File: `pipeline/kitchen_load_index.py`
-
-5. **POS Webhook Adapters** — Support for multiple vendors
-   - Handles Petpooja and Posist POS systems
-   - Normalizes different formats into standard schema
-   - File: `pipeline/pos_adapters.py` (new)
-
-### V2 Bug Fixes (Critical Data Pipeline Issues)
-- **Bug #1:** Fixed column name mismatch (`foot_traffic_index` → `local_foot_traffic_index`)
-- **Bug #2:** Fixed bootstrap confidence interval logic (was computing 0.00m rider wait)
-- **Bug #3:** Corrected baseline MAE calculation (using naive_kpt_estimate, not raw FOR time)
-
-**Status:** All V2 features preserved, all bugs fixed, metrics validated. ✅
+### Hidden Kitchen Load
+Dine-in customers and orders from competitor platforms (Swiggy, UberEats) are invisible to Zomato. When kitchen load spikes, riders get dispatched too early and wait at pickup. Currently **36.5%** of orders have rider wait times > 5 minutes.
 
 ---
 
-## 🎯 Problem Statement
+## How We Fixed It
 
-Zomato's KPT predictions depend on a merchant-pressed **"Food Ready" (FOR)** button that suffers from two critical failures:
+### 1. De-Noise the FOR Button
+Detect when merchants press the button after the rider arrives and correct for it. This removes the systematic bias that corrupted training data.
 
-### 1. **Rider-Influenced Bias**
-- Merchants delay pressing FOR until the rider arrives (mean delay: **+7.09 minutes**)
-- Zomato's ML model trains on these corrupted labels
-- Results in inflated, inaccurate KPT estimates for dispatch
+### 2. Add Hidden Load Signals
+Instead of relying only on Zomato's concurrent orders, we combine:
+- Order concurrency (30% weight)
+- Acceptance latency z-score (25% weight)
+- Google Popular Times foot traffic (30% weight)
+- Competitor platform orders (15% weight)
 
-### 2. **Hidden Kitchen Load**
-- Dine-in customers and competitor app orders (Swiggy, UberEats) are invisible to Zomato
-- Kitchen load spikes are not reflected in any available signal
-- Riders dispatched too early → wait at pickup location
+### 3. Make It Robust
+The system handles bad data gracefully:
+- When foot traffic data is unavailable, it redistributes weights to other signals
+- Doesn't over-correct for chaotic merchants (high variance in delays = real chaos, not bias)
+- Adapts to merchant behavior changes using exponential moving average
+- Tested against intentional corruptions in the data
 
-**Impact:** 36.5% of Zomato orders experience rider wait times > 5 minutes, leading to:
-- Increased cancellations and refunds
-- Lower restaurant ratings
-- Rider dissatisfaction
-
----
-
-## ✅ Solution: KitchenPulse
-
-A context-aware pipeline that:
-
-1. **De-noises the FOR button** — identifies and corrects merchant bias using rider proximity signals
-2. **Introduces hidden load proxies** — aggregates:
-   - POS/kitchen display system ready timestamps
-   - Google Popular Times foot traffic data
-   - Competitor platform order volume
-   - Zomato rolling concurrency window
-
-3. **Computes Kitchen Load Index (KLI)** — a real-time 0–100 score combining:
-   - Zomato concurrent orders (30% weight)
-   - Acceptance latency z-score (25% weight)
-   - Local foot traffic index (30% weight)
-   - Competitor order volume (15% weight)
-
-4. **Tiered routing strategy** — matches signal quality to merchant sophistication:
-   - **T1 (Large chains)** → POS integration (2.0x more accurate than FOR)
-   - **T2/T3 (Independent restaurants)** → De-biased FOR + KLI adjustment
-
-> **⚠️ This solution does NOT modify Zomato's KPT model.** It enriches the input signals fed into existing prediction systems.
+### 4. Support Multiple POS Systems
+Adapter pattern allows new POS vendors (Petpooja, Posist, etc.) to send direct ticket-cleared signals for most accurate ground truth.
 
 ---
 
-## 📊 Results
+## Results
 
 ### Headline Metrics
-| Metric | Baseline (POS Estimate) | KitchenPulse | Improvement |
-|--------|----------|--------------|-------------|
-| **KPT MAE** | 6.55 min | 3.66 min | **-44.2%** |
-| **Avg rider wait** | 2.52 min | 1.92 min | **-23.9%** |
-| **Orders wait > 5 min** | 21.7% | 16.6% | **-23.5%** |
 
-**Statistical Significance:** Bootstrap CI for baseline [6.49, 6.62] and KP [3.61, 3.70] do not overlap — improvement is statistically significant.
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| KPT Accuracy (MAE) | 6.55 min | 3.66 min | 44.2% better |
+| Avg Rider Wait | 2.52 min | 1.92 min | 23.9% less |
+| Orders > 5 min wait | 21.7% | 16.6% | 23.5% reduction |
+
+**Statistical Significance:** Bootstrap CI shows improvement is real (95% confidence intervals don't overlap).
 
 ### By Merchant Tier
 | Tier | Baseline MAE | KitchenPulse MAE | Improvement |
@@ -122,33 +74,21 @@ A context-aware pipeline that:
 
 ---
 
-## � V2 Bug Fixes — Critical Data Pipeline Issues
+## Implementation Notes
 
-**Three critical bugs were identified and fixed in the V2 release:**
+During development, several data pipeline issues were identified and corrected:
 
-### Bug #1: Missing `foot_traffic_index` Column
-- **Problem:** KLI module checked for `'foot_traffic_index'` but received `'local_foot_traffic_index'` from data generator
-- **Impact:** Fallback weighting strategy triggered unintentionally, degrading performance
-- **Fix:** Updated `kitchen_load_index.py` to reference correct column name
-- **Result:** KLI now uses DefaultWeightingStrategy (not fallback)
+1. **Column naming** — KLI expected `foot_traffic_index` but received `local_foot_traffic_index`. This caused fallback weighting to trigger unnecessarily. Fixed by standardizing the column reference.
 
-### Bug #2: Bootstrap Confidence Interval (0.00m Rider Wait)
-- **Problem:** robustness_tests.py passed identical wait arrays to bootstrap_ci, producing zero difference
-- **Impact:** Rider wait metrics showed 0.00m and 0.00% instead of actual values
-- **Fix:** Added `bootstrap_mean()` function for model-independent metrics (rider wait doesn't depend on KPT prediction)
-- **Result:** Correct metrics — Avg wait 4.03m [3.97, 4.10], >5min wait 36.5% [35.8%, 37.2%]
+2. **Bootstrap confidence intervals** — Robustness calculation was feeding identical arrays to the bootstrap function, producing zero variation for rider wait metrics. Now computes independent bootstrap means for model-agnostic metrics.
 
-### Bug #3: Baseline MAE Discrepancy (3.86m vs 6.55m)
-- **Problem:** run_simulation.py used `'raw_kpt'` (FOR button time) as baseline instead of `'naive_kpt_estimate'` (actual POS prediction)
-- **Impact:** Inconsistent baseline metrics between simulation.py (3.86m) and robustness_tests.py (6.55m)
-- **Fix:** Changed baseline to use `'naive_kpt_estimate'` — the actual POS prediction model
-- **Result:** Both scripts now report consistent baseline MAE = 6.55m
+3. **Baseline consistency** — Simulation was comparing against raw FOR button time (3.86m) while analysis used the POS estimate (6.55m). Standardized on the actual KPT model baseline for all comparisons.
 
-**All V2 features preserved and validated with corrected metrics. ✅**
+These corrections ensure the pipeline produces consistent, reliable metrics across all analysis phases.
 
 ---
 
-## �🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 - Python 3.10+
@@ -227,7 +167,7 @@ signal contributions, and stress‑testing out‑of‑distribution load levels.
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 kitchenpulse-zomato-kpt/
@@ -278,41 +218,41 @@ kitchenpulse-zomato-kpt/
 
 ---
 
-## 🔄 Pipeline Execution Flow
+## Pipeline Execution Flow
 
 ```mermaid
 graph TD
-    START(["📋 START<br/>Raw Order Data"]) --> DENOISE["🔧 SIGNAL DENOISING<br/>pipeline/signal_denoiser.py<br/>(Remove merchant bias)"]
+    START(["START: Raw Order Data"]) --> DENOISE["SIGNAL DENOISING<br/>pipeline/signal_denoiser.py<br/>Remove merchant bias"]
     
-    DENOISE --> D1["✓ Detect rider-proximate delays"]
-    DENOISE --> D2["✓ Learn per-merchant bias"]
-    DENOISE --> D3["✓ Correct FOR timestamps"]
+    DENOISE --> D1["Detect rider-proximate delays"]
+    DENOISE --> D2["Learn per-merchant bias"]
+    DENOISE --> D3["Correct FOR timestamps"]
     
-    D1 & D2 & D3 --> KLI["🎯 KITCHEN LOAD INDEX<br/>pipeline/kitchen_load_index.py<br/>(Real-time load scoring)"]
+    D1 & D2 & D3 --> KLI["KITCHEN LOAD INDEX<br/>pipeline/kitchen_load_index.py<br/>Real-time load scoring"]
     
     KLI --> K1["ZomatoConcurrency<br/>30% weight"]
     KLI --> K2["LatencyZScore<br/>25% weight"]
     KLI --> K3["FootTraffic<br/>30% weight"]
     KLI --> K4["CompetitorOrders<br/>15% weight"]
     
-    K1 & K2 & K3 & K4 --> COMBINE["⚡ COMBINE SIGNALS<br/>Weighted Fusion<br/>KLI Score 0-100"]
+    K1 & K2 & K3 & K4 --> COMBINE["COMBINE SIGNALS<br/>Weighted Fusion<br/>KLI Score 0-100"]
     
-    COMBINE --> ADJUST["🎛️ APPLY KLI ADJUSTMENT<br/>De-biased FOR + KLI modifier"]
+    COMBINE --> ADJUST["APPLY KLI ADJUSTMENT<br/>De-biased FOR + KLI modifier"]
     
-    ADJUST --> OUTPUT["💾 ENRICHED DATASET<br/>data/processed_orders.csv"]
+    ADJUST --> OUTPUT["ENRICHED DATASET<br/>data/processed_orders.csv"]
     
-    OUTPUT --> EVAL["📊 EVALUATION PATH<br/>Choose Analysis Type"]
+    OUTPUT --> EVAL["EVALUATION PATH<br/>Choose Analysis Type"]
     
-    EVAL -->|Simulation| SIM["⚖️ run_simulation.py<br/>3-Way Strategy"]
-    SIM --> CHART1["📈 simulation_results.png<br/>+44.2% improvement"]
+    EVAL -->|Simulation| SIM["run_simulation.py<br/>3-Way Strategy"]
+    SIM --> CHART1["simulation_results.png<br/>+44.2% improvement"]
     
-    EVAL -->|Analysis| CORR["🔍 correlation_analysis.py<br/>6 Statistical Charts"]
-    CORR --> CHART2["📊 report/figures/<br/>Publication-ready graphics"]
+    EVAL -->|Analysis| CORR["correlation_analysis.py<br/>6 Statistical Charts"]
+    CORR --> CHART2["report/figures/<br/>Publication-ready graphics"]
     
-    EVAL -->|Robustness| ROBUST["🧪 robustness_tests.py<br/>Bootstrap + Ablation + OOD"]
-    ROBUST --> CHART3["✅ ablation_results.png<br/>ood_stress_test.png"]
+    EVAL -->|Robustness| ROBUST["robustness_tests.py<br/>Bootstrap + Ablation + OOD"]
+    ROBUST --> CHART3["ablation_results.png<br/>ood_stress_test.png"]
     
-    CHART1 & CHART2 & CHART3 --> END(["🎉 COMPLETE<br/>Validated & Ready"])
+    CHART1 & CHART2 & CHART3 --> END(["COMPLETE<br/>Validated & Ready"])
     
     classDef input fill:#e1f5ff,stroke:#0277bd,stroke-width:3px
     classDef process fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
@@ -332,15 +272,15 @@ graph TD
 **Key Metrics by Stage:**
 | Stage | Impact |
 |-------|--------|
-| 🔧 **Signal Denoising** | Removes avg **7.09 min** merchant bias |
-| 🎯 **KLI Computation** | Real-time load scoring **0-100** |
-| ⚡ **Signal Fusion** | Combines 4 signals (correlation: **+0.383**) |
-| 📊 **Final Result** | **+44.2%** KPT accuracy (6.55m → 3.66m MAE) |
+| Signal Denoising | Removes avg 7.09 min merchant bias |
+| KLI Computation | Real-time load scoring 0-100 |
+| Signal Fusion | Combines 4 signals (correlation: +0.383) |
+| Final Result | +44.2% KPT accuracy (6.55m → 3.66m MAE) |
 
 
 ---
 
-## 🧪 Validation
+## Validation
 
 The code is validated on a **synthetic dataset** that realistically simulates:
 
@@ -358,7 +298,7 @@ This allows us to:
 
 ---
 
-## 🔑 Key Signals Introduced
+## Key Signals Introduced
 
 | Signal | Source | Availability | What It Captures |
 |--------|--------|--------------|------------------|
@@ -407,7 +347,7 @@ the composite KLI achieves near-correlation of latency (+0.383) by combining all
 
 ---
 
-## 🛠️ Technical Stack
+## Technical Stack
 
 - **Language:** Python 3.10+
 - **Data Processing:** Pandas, NumPy, SciPy
@@ -423,13 +363,13 @@ the composite KLI achieves near-correlation of latency (+0.383) by combining all
 
 ---
 
-## 📝 License
+## License
 
 MIT License — See LICENSE file for details.
 
 ---
 
-## ✨ Credits
+## Credits
 
 **KitchenPulse** was developed as a solution to the Zomato Kitchen Preparation Time prediction challenge.
 
@@ -441,7 +381,7 @@ MIT License — See LICENSE file for details.
 
 ---
 
-## 📬 Contact & Links
+## Contact & Links
 
 **GitHub Repository:** [https://github.com/ayhm23/KitchenPulse-Zomato-KPT](https://github.com/ayhm23/KitchenPulse-Zomato-KPT.git)
 
@@ -449,6 +389,5 @@ MIT License — See LICENSE file for details.
 
 ---
 
-**Last Updated:** March 1, 2026 (V2 Release with Bug Fixes)  
-**Branch:** V2 (Advanced Features + Critical Bug Fixes)  
-**Status:** ✅ Complete, Tested & Production-Ready
+**Last Updated:** March 2026  
+**Status:** Complete & Production-Ready
