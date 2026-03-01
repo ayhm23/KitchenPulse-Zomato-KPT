@@ -212,38 +212,56 @@ kitchenpulse-zomato-kpt/
 
 ## 🔄 Pipeline Execution Flow
 
-```
-synthetic_orders.csv
-    ↓
-signal_denoiser.py
-  • Flag RP-FOR events
-  • Learn merchant bias offsets
-  • Produce: corrected_for_kpt, raw_for_kpt, is_rp_for
-  • Introduce: pos_kpt (POS signal)
-    ↓
-kitchen_load_index.py
-  • Normalize 4 components:
-    - zomato_concurrent_orders
-    - acceptance_latency (z-score)
-    - local_foot_traffic_index
-    - competitor_platform_orders
-  • Compute: kitchen_load_index (0–100)
-  • Tiered routing:
-    - T1 → use pos_kpt
-    - T2/T3 → use corrected_for_kpt
-  • Apply KLI adjustment (±25%)
-  • Produce: kli_adjusted_kpt (output signal)
-    ↓
-processed_orders.csv
-    ↓
-run_simulation.py
-  • Compare 3 strategies vs true_kpt_minutes
-  • Generate simulation_results.png
-    ↓
-analysis/correlation_analysis.py
-  • Compute correlations
-  • Generate 6 publication charts
-  • Print PDF-ready numbers
+```mermaid
+graph TD
+    A["🗄️ synthetic_orders.csv<br/>17,594 orders<br/>50 restaurants"] --> B["🔧 signal_denoiser.py<br/>Signal Processing Layer"]
+    
+    B --> B1["Flag Rider-Proximate<br/>FOR events"]
+    B --> B2["Learn merchant<br/>bias offsets"]
+    B --> B3["Apply FOR<br/>correction"]
+    B --> B4["Compute POS-based<br/>KPT signal"]
+    
+    B1 & B2 & B3 & B4 --> C["🎯 kitchen_load_index.py<br/>Kitchen Load Calculation"]
+    
+    C --> C1["Normalize<br/>4 components:<br/>• Zomato concurrency<br/>• Acceptance latency<br/>• Foot traffic<br/>• Competitor orders"]
+    
+    C1 --> C2["Compute KLI<br/>Weighted Index<br/>0–100 scale"]
+    
+    C2 --> C3["Tiered Routing<br/>T1: POS signal<br/>T2/T3: De-biased FOR"]
+    
+    C3 --> C4["Apply KLI<br/>Adjustment<br/>±25% modifier"]
+    
+    C4 --> D["💾 processed_orders.csv<br/>Enriched dataset<br/>with all signals"]
+    
+    D --> E["⚖️ run_simulation.py<br/>Strategy Comparison"]
+    E --> E1["Strategy A: Baseline<br/>Zomato today"]
+    E --> E2["Strategy B: Denoised FOR<br/>Bias corrected"]
+    E --> E3["Strategy C: KitchenPulse<br/>Full system"]
+    
+    E1 & E2 & E3 --> F["📊 simulation_results.png<br/>5-panel dashboard<br/>MAE | Wait | Tier"]
+    
+    D --> G["🔍 correlation_analysis.py<br/>Statistical Analysis Layer"]
+    
+    G --> G1["Chart 1: Correlation<br/>heatmap"]
+    G --> G2["Chart 3: Hidden load<br/>impact"]
+    G --> G3["Chart 4: Hourly KLI<br/>heatmap"]
+    G --> G4["Chart 5: Tier<br/>improvement"]
+    G --> G5["Chart 6: Signal<br/>accuracy ladder"]
+    
+    G1 & G2 & G3 & G4 & G5 --> H["📈 PDF Report Ready<br/>6 publication charts<br/>+ statistics"]
+    
+    D --> I["🧪 robustness_tests.py<br/>Validation Layer"]
+    I --> I1["Bootstrap CI<br/>2,000 resamples"]
+    I --> I2["Ablation study<br/>Drop each signal"]
+    I --> I3["OOD stress test<br/>Load multiplier sweep"]
+    
+    I1 & I2 & I3 --> J["✅ Robustness Assurance<br/>ablation_results.png<br/>ood_stress_test.png"]
+    
+    style A fill:#e1f5ff
+    style D fill:#fff9c4
+    style F fill:#f3e5f5
+    style H fill:#c8e6c9
+    style J fill:#ffccbc
 ```
 
 ---
