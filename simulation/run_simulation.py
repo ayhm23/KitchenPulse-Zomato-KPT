@@ -265,7 +265,7 @@ def save_processed(df):
     # Keep only the columns useful for the PDF / further analysis
     keep = [
         'restaurant_id', 'restaurant_name', 'tier', 'hour_of_day', 'day_of_week',
-        'order_time', 'true_kpt_minutes', 'hidden_load',
+        'order_time', 'true_kpt_minutes', 'hidden_load', 'base_kpt_minutes',
         'zomato_concurrent_orders', 'acceptance_latency_seconds',
         'for_delay_seconds', 'is_rp_for', 'honest_merchant',
         'raw_for_kpt', 'corrected_for_kpt', 'pos_kpt', 'kli_adjusted_kpt',

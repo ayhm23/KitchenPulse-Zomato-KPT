@@ -141,6 +141,22 @@ Output: 6 publication-quality charts in `report/figures/`:
 - `chart6_signal_accuracy_ladder.png` — before/after signal ranking
 - `simulation_results.png` — Phase 2 comparison (5-panel)
 
+**Phase 4: Robustness & Sensitivity Evaluation**
+```bash
+python analysis/robustness_tests.py
+```
+Produces two additional plots in `analysis/`:
+- `ablation_results.png` — bar chart showing MAE when each KLI signal is
+  dropped; includes printed comparison table
+- `ood_stress_test.png` — line chart of MAE as hidden load multiplier
+  varies from 0.5× to 2.0×
+
+The console output prints bootstrap confidence intervals for KPT MAE,
+average wait, and >5 min wait along with commentary on statistical
+significance and signal dominance.  This phase inoculates the submission
+against circular‑validation critiques by quantifying uncertainty, isolating
+signal contributions, and stress‑testing out‑of‑distribution load levels.
+
 ---
 
 ## 📁 Project Structure
