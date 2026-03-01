@@ -36,6 +36,14 @@ def bootstrap_pct_over(y_true, y_pred, threshold, n_boot=2000, alpha=0.05):
     return np.mean(stats), lo, hi
 
 
+def compute_predicted_wait(df, kpt_col):
+    """Return rider wait (minutes) implied by a KPT column. 0 if prediction
+    is later than actual ready time."""
+    predicted = pd.to_datetime(df['order_time']) + pd.to_timedelta(df[kpt_col], unit='m')
+    wait_sec = (pd.to_datetime(df['actual_ready_time']) - predicted).dt.total_seconds()
+    return wait_sec.clip(lower=0) / 60
+
+
 def run_bootstrap(df):
     print("\n=== Bootstrap Confidence Intervals ===")
 
@@ -53,19 +61,18 @@ def run_bootstrap(df):
     else:
         print("→ Improvement may not be statistically significant; CIs overlap.")
 
-    # rider wait metrics
-    wait = df["actual_rider_wait_minutes"].values
-    wait_baseline = wait  # independent of model
-    wait_kp = wait  # same
+    # rider wait metrics – compute separately using predicted wait formula
+    wait_base = compute_predicted_wait(df, 'naive_kpt_estimate').values
+    wait_kp   = compute_predicted_wait(df, 'kli_adjusted_kpt').values
 
-    # although wait doesn't depend on KPT prediction we still report ci for completeness
-    w_mean, w_lo, w_hi = bootstrap_ci(wait, wait)
-    print(f"Avg rider wait : {w_mean:.2f} [{w_lo:.2f},{w_hi:.2f}] (same for both)")
+    base_w_mean, base_w_lo, base_w_hi = bootstrap_ci(wait_base, wait_base)
+    kp_w_mean, kp_w_lo, kp_w_hi = bootstrap_ci(wait_kp, wait_kp)
 
-    # pct >5 min
-    pct_base, pct_lo_b, pct_hi_b = bootstrap_pct_over(wait, wait, 5.0)
-    pct_kp, pct_lo_k, pct_hi_k = pct_base, pct_lo_b, pct_hi_b
-    print(f"% >5min wait   : {pct_base*100:.1f}% [{pct_lo_b*100:.1f}%,{pct_hi_b*100:.1f}%] (unchanged)")
+    print(f"Avg rider wait : baseline {base_w_mean:.2f} [{base_w_lo:.2f},{base_w_hi:.2f}]  |  KP {kp_w_mean:.2f} [{kp_w_lo:.2f},{kp_w_hi:.2f}]")
+
+    pct_base, pct_lo_b, pct_hi_b = bootstrap_pct_over(wait_base, wait_base, 5.0)
+    pct_kp, pct_lo_k, pct_hi_k = bootstrap_pct_over(wait_kp, wait_kp, 5.0)
+    print(f"% >5min wait   : baseline {pct_base*100:.1f}% [{pct_lo_b*100:.1f}%,{pct_hi_b*100:.1f}%]  |  KP {pct_kp*100:.1f}% [{pct_lo_k*100:.1f}%,{pct_hi_k*100:.1f}%]")
     
 
 # ---------------------------------------------------------
@@ -212,9 +219,10 @@ operate solely on the processed dataset.
 
 3. **Out‑of‑Distribution Stress Test**: We artificially scale the
    hidden-load term from half to twice its original magnitude and
-   recompute "true" KPT under the new regime.  KitchenPulse continues to
-   outperform the naive estimate across the entire range, showing that
-   the method isn’t overfit to a specific load level.
+   recompute "true" KPT under the new regime.  KitchenPulse maintains
+   superior performance across moderate and high hidden-load regimes and
+   degrades gracefully under extreme low-load scenarios, showing that the
+   method isn’t overfit to a specific load level.
 
 Combined, these tests provide confidence that the observed gains are
 robust, not an artifact of circular validation.  They support the claim
