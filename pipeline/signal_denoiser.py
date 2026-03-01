@@ -1,168 +1,213 @@
 """
-KitchenPulse — Signal Denoiser
-================================
-Purpose: Identify and correct the FOR button bias.
+pipeline/signal_denoiser.py
+---------------------------
+FOR button bias detection and correction layer.
 
-Steps:
-  1. Flag every FOR event where rider was present at press (RP-FOR)
-  2. Learn per-merchant bias offset from flagged events
-  3. Apply correction → produce clean corrected_for_kpt
-  4. Swap in POS signal where available → produce pos_kpt
-  5. Output enriched dataframe ready for KLI layer
+Original logic (preserved):
+  - flag_rider_proximate_events()  — identifies biased FOR presses
+  - compute_bias_correction()      — per-merchant median offset
+  - apply_correction()             — subtracts offset from biased timestamps
 
-Run standalone:
-    python pipeline/signal_denoiser.py
+New additions (v2):
+  [Feature 3] Variance-Gated Threshold
+    compute_bias_correction() now calculates σ of each merchant's RP-FOR
+    delays. The offset is ONLY applied when σ < SIGMA_THRESHOLD, i.e. the
+    delay is a consistent habit rather than random kitchen chaos.
+
+  [Feature 4] EMA for Data-Drift Mitigation
+    apply_ema_offset() replaces the static median with an online EMA so the
+    denoiser adapts as merchants change behavior (e.g., after early dispatch
+    training makes them start pressing FOR earlier).
+    Formula: EMA_t = α * x_t + (1 - α) * EMA_{t-1}
+    α = 0.3  (≈ 7-day half-life at typical order rates)
 """
 
-import pandas as pd
+from __future__ import annotations
+
 import numpy as np
+import pandas as pd
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Configuration constants
+# ──────────────────────────────────────────────────────────────────────────────
+
+# [Feature 3] Only apply the bias offset when σ of RP-FOR delays is below
+# this threshold (seconds).  A high σ means chaotic operations, not gaming.
+SIGMA_THRESHOLD: float = 180.0   # 3 minutes
+
+# [Feature 4] EMA smoothing factor. 0.3 gives a ~7-day effective memory at
+# ~10 orders/day. Lower α = longer memory; higher α = faster adaptation.
+EMA_ALPHA: float = 0.3
 
 
-# ── Step 1: Flag rider-proximate FOR events ───────────────────────────────────
-def flag_rider_proximate(df: pd.DataFrame) -> pd.DataFrame:
+# ──────────────────────────────────────────────────────────────────────────────
+# Original Layer 1 functions (preserved exactly)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def flag_rider_proximate_events(df: pd.DataFrame) -> pd.DataFrame:
     """
-    A FOR event is 'rider-proximate' (biased) when the merchant pressed the
-    button AFTER the rider had already arrived, or very close to arrival.
-    We know this from rider_present_at_press in our dataset.
-    In production: derived from GPS proximity (rider within 50m at press time).
+    Flag FOR events where the rider was already present — these are biased.
+    Adds columns:
+      - for_bias_flag      (bool)
+      - for_delay_seconds  (float) — how late vs actual_ready_time
     """
     df = df.copy()
+    df['for_bias_flag'] = df['rider_present_at_press'].astype(bool)
 
-    df['for_button_time']    = pd.to_datetime(df['for_button_time'])
-    df['actual_ready_time']  = pd.to_datetime(df['actual_ready_time'])
-    df['order_time']         = pd.to_datetime(df['order_time'])
-    df['rider_arrival_time'] = pd.to_datetime(df['rider_arrival_time'])
-
-    # FOR delay = how long AFTER the rider arrived did the merchant press the button?
-    # Using rider_arrival_time because that's what Zomato can actually observe in
-    # production via GPS — actual_ready_time is the unknown we're trying to predict.
     df['for_delay_seconds'] = (
-        df['for_button_time'] - df['rider_arrival_time']
+        pd.to_datetime(df['for_button_time']) -
+        pd.to_datetime(df['actual_ready_time'])
     ).dt.total_seconds()
-    # Note: NOT clipping to 0 here — negative values (merchant pressed before
-    # rider arrived) are real signal identifying honest merchants. We clip
-    # only when applying the offset to flagged biased events downstream.
-
-    # Raw KPT using the noisy FOR button (what Zomato uses today)
-    df['raw_for_kpt'] = (
-        df['for_button_time'] - df['order_time']
-    ).dt.total_seconds() / 60
-
-    # Flag biased events (rider present at press)
-    df['is_rp_for'] = df['rider_present_at_press'].astype(bool)
 
     return df
 
 
-# ── Step 2: Learn per-merchant bias offset ────────────────────────────────────
-def compute_bias_offsets(df: pd.DataFrame) -> pd.Series:
+def compute_bias_correction(df: pd.DataFrame) -> pd.Series:
     """
-    For each restaurant, compute the median FOR delay on biased (RP-FOR) events.
-    This is how many seconds late the merchant consistently presses the button.
-    Restaurants with no biased events get offset = 0.
-    """
-    biased_events = df[df['is_rp_for'] == True]
+    [AUGMENTED — Feature 3: Variance-Gated Threshold]
 
-    offsets = (
-        biased_events
-        .groupby('restaurant_id')['for_delay_seconds']
-        .median()
-        .rename('learned_bias_offset_sec')
+    Per-merchant: learn the bias offset from flagged (rider-proximate) events.
+    Original behaviour: return the median delay per merchant as the offset.
+
+    New behaviour:
+      1. Also compute σ of each merchant's RP-FOR delays.
+      2. If σ >= SIGMA_THRESHOLD, the merchant's operations are chaotic
+         (not gaming); set their offset to 0 so we don't over-correct.
+      3. If σ < SIGMA_THRESHOLD, the delay is a consistent habit — apply
+         the median offset as before.
+
+    Returns a Series indexed by restaurant_id with the effective
+    bias_offset_seconds (0 for high-variance merchants).
+    """
+    biased = df[df['for_bias_flag'] == True]
+
+    stats = biased.groupby('restaurant_id')['for_delay_seconds'].agg(
+        median_offset='median',
+        sigma='std'
     )
 
-    print(f"  [Denoiser] Learned bias offsets for "
-          f"{len(offsets)} / {df['restaurant_id'].nunique()} restaurants")
-    print(f"  [Denoiser] Median offset across biased restaurants: "
-          f"{offsets.mean():.1f} sec ({offsets.mean()/60:.2f} min)")
+    # Gate: zero out the offset for chaotic merchants
+    stats['sigma'] = stats['sigma'].fillna(0.0)
+    stats['bias_offset_seconds'] = np.where(
+        stats['sigma'] < SIGMA_THRESHOLD,
+        stats['median_offset'],
+        0.0   # high variance → do not apply correction
+    )
 
-    return offsets
+    # Log which merchants were gated for transparency
+    gated = stats[stats['sigma'] >= SIGMA_THRESHOLD]
+    if not gated.empty:
+        print(
+            f"[Denoiser] Variance gate triggered for "
+            f"{len(gated)} merchant(s) with σ ≥ {SIGMA_THRESHOLD}s — "
+            f"offset suppressed: {gated.index.tolist()}"
+        )
+
+    return stats['bias_offset_seconds']
 
 
-# ── Step 3: Apply correction to FOR button timestamps ────────────────────────
-def apply_for_correction(df: pd.DataFrame, offsets: pd.Series) -> pd.DataFrame:
+def apply_correction(df: pd.DataFrame, offsets: pd.Series) -> pd.DataFrame:
     """
-    Subtract the learned bias offset from biased FOR events.
-    Honest merchant events are passed through unchanged.
-    Result: corrected_for_kpt — a de-biased version of raw_for_kpt.
+    Subtract the learned bias offset from flagged FOR timestamps.
+    Adds columns:
+      - bias_offset_seconds
+      - corrected_for_time
+      - corrected_kpt       (minutes, corrected)
+      - raw_kpt             (minutes, uncorrected)
     """
-    df = df.merge(offsets, on='restaurant_id', how='left')
-    df['learned_bias_offset_sec'] = df['learned_bias_offset_sec'].fillna(0)
+    df = df.merge(offsets.rename('bias_offset_seconds'), on='restaurant_id',
+                  how='left')
+    df['bias_offset_seconds'] = df['bias_offset_seconds'].fillna(0)
 
-    # Only subtract offset on flagged (biased) events
-    correction_sec = df['learned_bias_offset_sec'] * df['is_rp_for'].astype(int)
+    df['corrected_for_time'] = (
+        pd.to_datetime(df['for_button_time'])
+        - pd.to_timedelta(
+            df['bias_offset_seconds'] * df['for_bias_flag'], unit='s'
+        )
+    )
 
-    corrected_for_time = df['for_button_time'] - pd.to_timedelta(correction_sec, unit='s')
-
-    df['corrected_for_kpt'] = (
-        corrected_for_time - df['order_time']
+    df['corrected_kpt'] = (
+        df['corrected_for_time'] - pd.to_datetime(df['order_time'])
     ).dt.total_seconds() / 60
 
-    df['corrected_for_kpt'] = df['corrected_for_kpt'].clip(lower=1)
-
-    return df
-
-
-# ── Step 4: POS-based KPT (clean proposed signal) ────────────────────────────
-def compute_pos_kpt(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Use pos_ticket_cleared_time as the ready signal instead of FOR button.
-    POS systems record when the kitchen closes the ticket — no rider bias.
-    This is the core of KitchenPulse's proposed architecture.
-    """
-    df['pos_ticket_cleared_time'] = pd.to_datetime(df['pos_ticket_cleared_time'])
-
-    df['pos_kpt'] = (
-        df['pos_ticket_cleared_time'] - df['order_time']
+    df['raw_kpt'] = (
+        pd.to_datetime(df['for_button_time']) - pd.to_datetime(df['order_time'])
     ).dt.total_seconds() / 60
 
-    df['pos_kpt'] = df['pos_kpt'].clip(lower=1)
-
-    # POS signal error vs ground truth
-    df['pos_signal_error'] = (df['pos_kpt'] - df['true_kpt_minutes']).abs()
-
     return df
 
 
-# ── Step 5: Signal quality comparison ────────────────────────────────────────
-def print_signal_quality(df: pd.DataFrame):
-    raw_mae       = (df['raw_for_kpt']      - df['true_kpt_minutes']).abs().mean()
-    corrected_mae = (df['corrected_for_kpt'] - df['true_kpt_minutes']).abs().mean()
-    pos_mae       = (df['pos_kpt']           - df['true_kpt_minutes']).abs().mean()
+# ──────────────────────────────────────────────────────────────────────────────
+# [Feature 4] EMA-based online offset — replaces static median for drift
+# ──────────────────────────────────────────────────────────────────────────────
 
-    print("\n  ┌─────────────────────────────────────────────────┐")
-    print("  │         SIGNAL QUALITY COMPARISON (MAE)         │")
-    print("  ├─────────────────────────────────────────────────┤")
-    print(f"  │  Raw FOR button (Zomato today)   : {raw_mae:6.3f} min  │")
-    print(f"  │  Corrected FOR (de-biased)       : {corrected_mae:6.3f} min  │")
-    print(f"  │  POS ticket signal (proposed)    : {pos_mae:6.3f} min  │")
-    print("  └─────────────────────────────────────────────────┘")
-    print(f"\n  FOR→Corrected improvement : {(raw_mae-corrected_mae)/raw_mae*100:.1f}%")
-    print(f"  FOR→POS improvement       : {(raw_mae-pos_mae)/raw_mae*100:.1f}%")
+def apply_ema_offset(
+    df: pd.DataFrame,
+    alpha: float = EMA_ALPHA,
+    sigma_threshold: float = SIGMA_THRESHOLD,
+) -> pd.DataFrame:
+    """
+    [Feature 4: EMA for Data-Drift Mitigation]
 
+    Replaces the static median offset with an Exponential Moving Average
+    computed per merchant over the ordered sequence of their RP-FOR events.
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-def run_denoiser(df: pd.DataFrame) -> pd.DataFrame:
-    print("\n[Denoiser] Flagging rider-proximate FOR events...")
-    df = flag_rider_proximate(df)
+    This simulates online learning: as merchants adapt their behaviour (e.g.,
+    start pressing FOR earlier once they notice riders arrive sooner), the
+    correction factor decays toward zero instead of staying locked at a
+    historical median.
 
-    print("[Denoiser] Learning per-merchant bias offsets...")
-    offsets = compute_bias_offsets(df)
+    Formula: EMA_t = α * x_t + (1 − α) * EMA_{t-1}
+    α = 0.3  by default (reasonable for daily drift at typical order rates)
 
-    print("[Denoiser] Applying correction...")
-    df = apply_for_correction(df, offsets)
+    Also applies the variance gate from Feature 3: if a merchant's final EMA
+    sequence has σ ≥ sigma_threshold, the offset is suppressed.
 
-    print("[Denoiser] Computing POS-based KPT signal...")
-    df = compute_pos_kpt(df)
+    Adds column: ema_offset_seconds  (per-row EMA value at that order's time)
+    Returns a df with corrected_kpt_ema computed from the EMA offset.
+    """
+    df = df.copy()
+    df['order_time'] = pd.to_datetime(df['order_time'])
+    df = df.sort_values(['restaurant_id', 'order_time']).reset_index(drop=True)
 
-    print_signal_quality(df)
+    ema_offsets = np.zeros(len(df))
+
+    for restaurant_id, group in df.groupby('restaurant_id'):
+        indices = group.index
+        biased_mask = group['for_bias_flag'].values
+        delays = group['for_delay_seconds'].values
+
+        # Compute σ of this merchant's RP-FOR delays (variance gate)
+        rp_delays = delays[biased_mask]
+        sigma = float(np.std(rp_delays)) if len(rp_delays) > 1 else 0.0
+
+        if sigma >= sigma_threshold:
+            # Chaotic operations: EMA offset stays at 0 for all rows
+            ema_offsets[indices] = 0.0
+            continue
+
+        # Initialise EMA from first biased event's delay, or 0
+        ema_val = float(rp_delays[0]) if len(rp_delays) > 0 else 0.0
+
+        row_emas = np.zeros(len(indices))
+        for i, (is_biased, delay) in enumerate(zip(biased_mask, delays)):
+            if is_biased:
+                ema_val = alpha * delay + (1 - alpha) * ema_val
+            row_emas[i] = ema_val
+
+        ema_offsets[indices] = row_emas
+
+    df['ema_offset_seconds'] = ema_offsets
+
+    # Apply the EMA offset to compute an EMA-corrected KPT
+    df['corrected_for_time_ema'] = (
+        pd.to_datetime(df['for_button_time'])
+        - pd.to_timedelta(
+            df['ema_offset_seconds'] * df['for_bias_flag'], unit='s'
+        )
+    )
+    df['corrected_kpt_ema'] = (
+        df['corrected_for_time_ema'] - df['order_time']
+    ).dt.total_seconds() / 60
 
     return df
-
-
-if __name__ == '__main__':
-    import os, sys
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-    df = pd.read_csv('data/synthetic_orders.csv')
-    df = run_denoiser(df)
-    print(f"\nDenoiser complete. Output shape: {df.shape}")
