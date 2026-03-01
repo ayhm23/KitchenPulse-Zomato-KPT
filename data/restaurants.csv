@@ -1,0 +1,51 @@
+restaurant_id,name,tier,base_kpt_minutes,honest_merchant,bias_offset_min,naive_kpt_base
+R000,Spice Junction,T3,18,False,12.49,28.62
+R001,Biryani Bros,T2,13,False,19.41,29.5
+R002,The Curry House,T3,12,True,0.73,12.62
+R003,Mumbai Bites,T3,12,False,15.18,24.91
+R004,Delhi Darbar,T2,10,True,0.16,10.13
+R005,Taste of Bengal,T3,32,True,0.16,32.13
+R006,Southern Spice,T3,28,False,8.7,35.39
+R007,Punjabi Tadka,T2,34,True,0.87,34.74
+R008,Coastal Kitchen,T3,20,True,0.6,20.51
+R009,Street Food Co,T2,34,False,16.5,48.02
+R010,Masala Twist,T2,13,False,8.25,20.01
+R011,Dosa Palace,T2,18,False,19.64,34.69
+R012,Chaat Corner,T3,27,True,0.83,27.71
+R013,Tandoor Express,T2,12,True,0.21,12.18
+R014,Royal Feast,T3,29,True,0.18,29.15
+R015,Kebab Station,T3,16,False,10.2,24.67
+R016,Thali World,T3,17,False,11.65,26.9
+R017,Noodle Nook,T3,17,True,0.52,17.45
+R018,Wrap & Roll,T3,24,False,13.18,35.21
+R019,The Lunch Box,T3,21,False,11.49,30.77
+R020,Grill Master,T2,32,True,0.61,32.52
+R021,Curry Leaf,T3,29,True,0.14,29.12
+R022,Flavour Town,T3,17,True,0.29,17.25
+R023,Saffron Nights,T2,30,False,12.4,40.54
+R024,Momo Magic,T3,20,False,13.47,31.45
+R025,Pav Bhaji Point,T3,17,True,0.79,17.67
+R026,The Idli Shop,T3,22,True,0.2,22.17
+R027,Quick Bites,T2,28,False,14.17,40.05
+R028,Hunger Fix,T3,30,False,15.11,42.84
+R029,Urban Dhaba,T2,30,True,0.05,30.04
+R030,Spicy Wok,T2,17,False,15.29,30.0
+R031,The Roti Hub,T3,33,True,0.17,33.14
+R032,Tikka Trails,T3,22,True,0.07,22.06
+R033,Bowl of India,T2,14,True,0.95,14.81
+R034,Frankie Fort,T3,11,False,19.59,27.65
+R035,Samosa House,T3,15,False,17.7,30.05
+R036,Rice Bowl,T3,12,True,0.3,12.26
+R037,The Dal Kitchen,T2,24,True,0.1,24.08
+R038,Chaipani,T3,10,True,0.68,10.58
+R039,Snack Attack,T3,27,False,13.28,38.29
+R040,Burger Barn,T3,20,True,0.12,20.1
+R041,Pizza Peak,T2,24,True,0.5,24.42
+R042,Sandwich Stop,T1,33,True,0.03,33.03
+R043,Juice Junction,T2,15,True,0.91,15.77
+R044,Taco Treats,T3,30,False,11.11,39.44
+R045,Waffle World,T2,29,True,0.66,29.56
+R046,Crepe Cafe,T2,15,False,11.74,24.98
+R047,The Dessert Lab,T3,26,True,0.52,26.44
+R048,Sweet Tooth,T3,25,True,0.55,25.46
+R049,Chill & Grill,T1,35,True,0.18,35.16
