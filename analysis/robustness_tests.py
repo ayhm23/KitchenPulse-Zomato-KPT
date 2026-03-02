@@ -1,158 +1,203 @@
+"""
+KitchenPulse — Robustness & Sensitivity Analysis
+==================================================
+Runs three independent evaluations treating the prediction mechanism as a
+black box, operating on processed_orders.csv.
+
+Tests:
+  1. Bootstrap confidence intervals — 2000 resamples, 95% CI for MAE,
+     avg rider wait, and % orders > 5 min wait.
+  2. Ablation study — drop one KLI signal at a time, recompute KLI,
+     measure MAE impact.
+  3. OOD stress test — scale hidden_load from 0.5x to 2.0x, measure
+     KitchenPulse vs Baseline MAE across load regimes.
+
+FIX SUMMARY:
+  - Required columns check: replaced 'acceptance_latency_zscore' with
+    'acceptance_latency_seconds' (the raw input column that must be present).
+    The z-score 'acceptance_latency_zscore' is a derived output that may not
+    exist if pipeline was run with an older version of kitchen_load_index.py.
+  - Rider wait bootstrap uses bootstrap_mean() on the model-independent
+    actual_rider_wait_minutes column (not dependent on KPT model).
+  - Clarified that the ablation is within-model (same processed df), not
+    out-of-sample — see docstring in run_ablation().
+
+Run:
+    python analysis/robustness_tests.py
+    (requires data/processed_orders.csv — run simulation/run_simulation.py first)
+"""
+
+import os
 import pandas as pd
 import numpy as np
 from sklearn.metrics import mean_absolute_error
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 np.random.seed(42)
 
 DATA_PATH = "data/processed_orders.csv"
+os.makedirs('analysis', exist_ok=True)
 
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # 1. BOOTSTRAP CONFIDENCE INTERVALS
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 def bootstrap_ci(y_true, y_pred, n_boot=2000, alpha=0.05):
+    """Bootstrap MAE confidence interval."""
     stats = []
     n = len(y_true)
-
     for _ in range(n_boot):
         idx = np.random.randint(0, n, n)
         stats.append(mean_absolute_error(y_true[idx], y_pred[idx]))
-
     lo = np.percentile(stats, 100 * alpha / 2)
     hi = np.percentile(stats, 100 * (1 - alpha / 2))
     return np.mean(stats), lo, hi
 
 
 def bootstrap_mean(series, n_boot=2000, alpha=0.05):
-    """Bootstrap the mean of a series (not prediction error)."""
+    """Bootstrap the mean of a series (model-independent)."""
     stats = []
-    n = len(series)
     data = series.dropna().values
-    
     for _ in range(n_boot):
         idx = np.random.randint(0, len(data), len(data))
         stats.append(np.mean(data[idx]))
-    
     lo = np.percentile(stats, 100 * alpha / 2)
     hi = np.percentile(stats, 100 * (1 - alpha / 2))
     return np.mean(stats), lo, hi
 
 
 def run_bootstrap(df):
-    print("\n=== Bootstrap Confidence Intervals ===")
+    print("\n=== Bootstrap Confidence Intervals (n_boot=2000) ===")
 
     y_true = df["true_kpt_minutes"].values
     baseline = df["naive_kpt_estimate"].values
     kp = df["kli_adjusted_kpt"].values
 
-    # KPT MAE
     base_mae, base_lo, base_hi = bootstrap_ci(y_true, baseline)
     kp_mae, kp_lo, kp_hi = bootstrap_ci(y_true, kp)
 
-    print(f"KPT MAE   : baseline {base_mae:.2f} [{base_lo:.2f},{base_hi:.2f}]  |  KP {kp_mae:.2f} [{kp_lo:.2f},{kp_hi:.2f}]")
+    print(f"KPT MAE   : baseline {base_mae:.2f} [{base_lo:.2f},{base_hi:.2f}]  |  "
+          f"KP {kp_mae:.2f} [{kp_lo:.2f},{kp_hi:.2f}]")
     if kp_hi < base_lo:
         print("=> MAE improvement is statistically significant (CIs do not overlap).")
     else:
         print("=> Improvement may not be statistically significant; CIs overlap.")
 
-    # rider wait metrics — independent of model, so bootstrap the mean directly
+    # Rider wait metrics are model-independent (they depend on actual_ready_time,
+    # not on our KPT prediction), so we just bootstrap the observed distribution.
     wait = df["actual_rider_wait_minutes"]
-    
-    w_mean, w_lo, w_hi = bootstrap_mean(wait)
-    print(f"Avg rider wait : {w_mean:.2f} [{w_lo:.2f},{w_hi:.2f}] (model-independent)")
 
-    # pct >5 min
+    w_mean, w_lo, w_hi = bootstrap_mean(wait)
+    print(f"Avg rider wait : {w_mean:.2f} [{w_lo:.2f},{w_hi:.2f}] (model-independent, observed)")
+
     pct_over_5 = (wait > 5.0).astype(float)
     pct_mean, pct_lo, pct_hi = bootstrap_mean(pct_over_5)
-    print(f"% >5min wait   : {pct_mean*100:.1f}% [{pct_lo*100:.1f}%,{pct_hi*100:.1f}%] (model-independent)")
-    
+    print(f"% >5min wait   : {pct_mean*100:.1f}% [{pct_lo*100:.1f}%,{pct_hi*100:.1f}%] "
+          f"(model-independent, observed)")
 
-# ---------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 2. ABLATION STUDY
-# ---------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
-def compute_kli(df, drop_signal=None):
+def recompute_kli_ablation(df, drop_signal=None):
+    """
+    Recompute KLI from normalised signals already in the processed df,
+    optionally zeroing out one signal and redistributing its weight.
+
+    NOTE: This is a within-model ablation — it measures how much each signal
+    contributes to the KLI score on the same processed dataset. It is NOT an
+    out-of-sample test.
+    """
     signals = {
-        "concurrent": df["zomato_concurrent_orders"],
-        "latency": df["acceptance_latency_seconds"],
-        "foot_traffic": df["local_foot_traffic_index"],
-        "competitor": df["competitor_platform_orders"],
+        "concurrent":   df["zomato_concurrent_orders"] / 15.0,
+        "latency":      df["latency_norm"] if "latency_norm" in df.columns
+                        else df["acceptance_latency_seconds"].clip(lower=0) / df["acceptance_latency_seconds"].max(),
+        "foot_traffic": df["local_foot_traffic_index"] / 100.0,
+        "competitor":   df["competitor_platform_orders"].clip(0, 15) / 15.0,
     }
 
     weights = {
-        "concurrent": 0.30,
-        "latency": 0.25,
+        "concurrent":   0.30,
+        "latency":      0.25,
         "foot_traffic": 0.30,
-        "competitor": 0.15,
+        "competitor":   0.15,
     }
 
-    if drop_signal:
+    if drop_signal and drop_signal in weights:
         weights[drop_signal] = 0.0
         total = sum(weights.values())
-        for k in weights:
-            weights[k] /= total
+        if total > 0:
+            weights = {k: v / total for k, v in weights.items()}
 
     kli = sum(weights[k] * signals[k] for k in signals)
-    kli = 100 * (kli - kli.min()) / (kli.max() - kli.min())
+    # Re-normalise to 0–100
+    kli_min, kli_max = kli.min(), kli.max()
+    if kli_max > kli_min:
+        kli = 100 * (kli - kli_min) / (kli_max - kli_min)
+    else:
+        kli = kli * 0 + 50
     return kli
 
 
-# ---------------------------------------------------------
-# 2. ABLATION STUDY (FIXED)
-# ---------------------------------------------------------
 def run_ablation(df):
+    """
+    Ablation study: drop one signal at a time and measure the impact on MAE.
+
+    The clean base signal (POS for T1, corrected_for_kpt for T2/T3) is
+    recovered by reversing the KLI multiplier from the processed df.
+    """
     print("\n=== Ablation Study ===")
+    print("  Note: within-model ablation on processed_orders.csv (not out-of-sample)")
+
     y_true = df["true_kpt_minutes"]
     results = []
 
-    # RECOVER THE CLEAN BASE SIGNAL (POS for T1, Corrected FOR for T2/T3)
-    # We reverse-engineer it from the final kli_adjusted_kpt in the dataset
+    # Recover clean base signal by reversing the KLI multiplier
     original_multiplier = 1 + (df["kitchen_load_index"] - 50) / 200
     clean_base = df["kli_adjusted_kpt"] / original_multiplier
 
     for drop in [None, "concurrent", "latency", "foot_traffic", "competitor"]:
-        temp = df.copy()
-        kli = compute_kli(temp, drop_signal=drop)
-        
-        # Apply KLI to the CLEAN base, not the naive estimate
+        kli = recompute_kli_ablation(df, drop_signal=drop)
         adjusted = clean_base * (1 + (kli - 50) / 200)
-        mae = mean_absolute_error(y_true, adjusted)
+        m = mean_absolute_error(y_true, adjusted)
         key = drop if drop else "all_signals"
-        results.append((key, mae))
-        print(f"Dropped {key:<15} → MAE {mae:.2f}")
+        results.append((key, m))
+        print(f"  Dropped {key:<15} → MAE {m:.2f}")
 
-    # chart
     labels, maes = zip(*results)
     plt.figure(figsize=(8, 5))
-    
-    # Use your custom colors
     colors = ['#27AE60' if l == 'all_signals' else '#3498DB' for l in labels]
     plt.bar(labels, maes, color=colors)
     plt.ylabel("MAE vs True KPT (minutes)")
     plt.xticks(rotation=45)
     plt.title("Ablation Study — Signal Contribution")
     plt.ylim(0, max(maes) + 1)
-    
-    # Add values on top of bars
     for i, v in enumerate(maes):
         plt.text(i, v + 0.1, f'{v:.2f}m', ha='center', fontweight='bold')
-        
     plt.tight_layout()
     plt.savefig("analysis/ablation_results.png")
     plt.close()
+    print("  Chart → analysis/ablation_results.png")
 
-# ---------------------------------------------------------
-# 3. OOD STRESS TEST (FIXED)
-# ---------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. OOD STRESS TEST
+# ─────────────────────────────────────────────────────────────────────────────
+
 def run_ood_test(df):
+    """
+    Scale hidden_load from 0.5x to 2.0x to simulate out-of-distribution load
+    conditions. Measures KitchenPulse vs Baseline MAE at each level.
+    """
     print("\n=== OOD Hidden Load Multiplier Test ===")
     multipliers = np.linspace(0.5, 2.0, 8)
     maes_kp = []
     maes_baseline = []
 
-    # Recover the clean base signal
     original_multiplier = 1 + (df["kitchen_load_index"] - 50) / 200
     clean_base = df["kli_adjusted_kpt"] / original_multiplier
 
@@ -163,15 +208,15 @@ def run_ood_test(df):
             + temp["hidden_load"] * m * 1.5
             + temp["zomato_concurrent_orders"] * 0.8
         )
-        kli = compute_kli(temp)
+        kli = recompute_kli_ablation(temp)
         adjusted = clean_base * (1 + (kli - 50) / 200)
-        
+
         mae_kp = mean_absolute_error(temp["true_kpt_minutes_mod"], adjusted)
         mae_base = mean_absolute_error(temp["true_kpt_minutes_mod"], temp["naive_kpt_estimate"])
-        
+
         maes_kp.append(mae_kp)
         maes_baseline.append(mae_base)
-        print(f"Hidden Load x{m:.2f} → KP MAE: {mae_kp:.2f} | Baseline MAE: {mae_base:.2f}")
+        print(f"  Hidden Load x{m:.2f} → KP MAE: {mae_kp:.2f} | Baseline MAE: {mae_base:.2f}")
 
     plt.figure(figsize=(8, 5))
     plt.plot(multipliers, maes_baseline, marker="x", color="#E74C3C", linewidth=2, label="Zomato Baseline")
@@ -184,68 +229,46 @@ def run_ood_test(df):
     plt.tight_layout()
     plt.savefig("analysis/ood_stress_test.png")
     plt.close()
+    print("  Chart → analysis/ood_stress_test.png")
 
-# ---------------------------------------------------------
-# 4. SUMMARY TEXT
-# ---------------------------------------------------------
 
-ROBUSTNESS_TEXT = r"""
-Robustness & Sensitivity Analysis
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────────────────────
 
-To address concerns about circular validation—namely that our
-simulation and the KitchenPulse adjustment both derive from the same
-hidden-load and concurrency signals—we introduce three independent
-evaluations that treat the prediction mechanism as a black box and
-operate solely on the processed dataset.
-
-1. **Bootstrap Confidence Intervals**: We resample orders 2,000 times
-   to compute 95% intervals for mean absolute error (MAE), average rider
-   wait, and the percentage of orders experiencing >5 min wait.  The
-   intervals for MAE clearly separate the baseline and KitchenPulse,
-   demonstrating that improvements are statistically significant and not
-   artifacts of a particular draw.
-
-2. **Ablation Study**: We recompute the Kitchen Load Index (KLI) while
-   dropping each component signal in turn.  The table and accompanying
-   bar chart show that no single signal drives the reduction in MAE; all
-   four contribute meaningfully.  This dispels the notion that our model
-   is merely exploiting one trivially correlated feature from the simulator.
-
-3. **Out‑of‑Distribution Stress Test**: We artificially scale the
-   hidden-load term from half to twice its original magnitude and
-   recompute "true" KPT under the new regime.  KitchenPulse continues to
-   outperform the naive estimate across the entire range, showing that
-   the method isn’t overfit to a specific load level.
-
-Combined, these tests provide confidence that the observed gains are
-robust, not an artifact of circular validation.  They support the claim
-that KitchenPulse enhances prediction accuracy across plausible
-operating conditions, with quantifiable uncertainty and without relying
-on any retraining or tuned parameters.
-"""
-
+# FIX: removed 'acceptance_latency_zscore' from required columns — that is a
+# derived output column, not guaranteed to be present. The raw input column
+# 'acceptance_latency_seconds' must be present (it is always in the dataset).
+REQUIRED_COLUMNS = [
+    "true_kpt_minutes",
+    "naive_kpt_estimate",
+    "kli_adjusted_kpt",
+    "kitchen_load_index",
+    "base_kpt_minutes",
+    "hidden_load",
+    "zomato_concurrent_orders",
+    "acceptance_latency_seconds",
+    "local_foot_traffic_index",
+    "competitor_platform_orders",
+    "actual_rider_wait_minutes",
+]
 
 if __name__ == "__main__":
+    if not os.path.exists(DATA_PATH):
+        raise FileNotFoundError(
+            f"{DATA_PATH} not found. Run simulation/run_simulation.py first."
+        )
+
     df = pd.read_csv(DATA_PATH)
-    required = [
-        "true_kpt_minutes",
-        "naive_kpt_estimate",
-        "kli_adjusted_kpt",
-        "base_kpt_minutes",
-        "hidden_load",
-        "zomato_concurrent_orders",
-        "acceptance_latency_seconds",
-        "local_foot_traffic_index",
-        "competitor_platform_orders",
-    ]
-    missing = [c for c in required if c not in df.columns]
+
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
-        raise ValueError(f"missing columns in dataset: {missing}")
+        raise ValueError(f"Missing columns in dataset: {missing}")
 
     run_bootstrap(df)
     run_ablation(df)
     run_ood_test(df)
 
-    print("\nRobustness tests complete.  See analysis/ablation_results.png and analysis/ood_stress_test.png")
-    print("\n---\n")
-    print(ROBUSTNESS_TEXT)
+    print("\nRobustness tests complete.")
+    print("  analysis/ablation_results.png")
+    print("  analysis/ood_stress_test.png\n")

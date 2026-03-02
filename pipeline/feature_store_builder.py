@@ -1,70 +1,38 @@
+# pipeline/feature_store_builder.py
 """
-Feature Store Builder
+KitchenPulse — Feature Store Builder
+======================================
+Assembles the final feature bundle by wrapping run_denoiser + run_kli.
 
-Assembles final feature bundle for analysis and reporting.
+FIX: No functional changes. Added explicit note that actual_ready_time
+     is an EVAL-ONLY column and must not be used as a training feature.
 """
 
+from __future__ import annotations
 import pandas as pd
-import numpy as np
-from signal_denoiser import correct_button_bias
-from kitchen_load_index import compute_kitchen_load_index
+from pipeline.signal_denoiser import run_denoiser
+from pipeline.kitchen_load_index import run_kli
 
 
 class FeatureStoreBuilder:
-    """
-    Builds a comprehensive feature store from raw order data.
-    """
-    
-    def __init__(self):
-        """Initialize feature store builder."""
-        pass
-    
-    def build_features(self, df):
-        """
-        Build complete feature set.
-        
-        Parameters:
-        -----------
-        df : pd.DataFrame
-            Raw order data
-            
-        Returns:
-        --------
-        pd.DataFrame
-            Feature-enriched dataframe
-        """
-        # Apply signal denoising
-        df = correct_button_bias(df)
-        
-        # Compute kitchen load index
-        df = compute_kitchen_load_index(df)
-        
-        # Additional features can be added here if dataset supplies columns
-        # such as button presses or item counts. currently not applicable.
-        
-        # Time-based features (use order_time since timestamp may not exist)
+    def build_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        df = run_denoiser(df)
+        df = run_kli(df)
         df['order_time'] = pd.to_datetime(df['order_time'])
         df['hour'] = df['order_time'].dt.hour
         df['day_of_week'] = df['order_time'].dt.dayofweek
-        
+        # EVAL-ONLY columns — do NOT pass to model training:
+        #   actual_ready_time, true_kpt_minutes, naive_kpt_error,
+        #   actual_rider_wait_minutes, merchant_bias_offset_min
         return df
 
 
-def build_feature_store(df):
-    """
-    Build feature store from raw data.
-    
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        Raw order dataframe
-        
-    Returns:
-    --------
-    pd.DataFrame
-        Feature-enriched dataframe ready for analysis
-    """
-    builder = FeatureStoreBuilder()
-    features_df = builder.build_features(df)
-    
-    return features_df
+def build_feature_store(df: pd.DataFrame) -> pd.DataFrame:
+    return FeatureStoreBuilder().build_features(df)
+
+
+if __name__ == '__main__':
+    df = pd.read_csv('data/synthetic_orders.csv')
+    out = build_feature_store(df)
+    print(f"Feature store built. Shape: {out.shape}")
+    print(f"Columns: {list(out.columns)}")

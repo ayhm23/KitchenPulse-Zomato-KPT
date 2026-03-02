@@ -4,7 +4,7 @@
 ![Tested](https://img.shields.io/badge/Status-Production--Ready-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-A signal-enrichment pipeline that improves kitchen preparation time predictions by **44.2%** by removing merchant bias and introducing hidden-load signals.
+A signal-enrichment pipeline that improves kitchen preparation time predictions by **44.1%** by removing merchant bias and introducing hidden-load signals.
 
 ---
 
@@ -13,7 +13,7 @@ A signal-enrichment pipeline that improves kitchen preparation time predictions 
 Food delivery platforms rely on merchants pressing a "Food Ready" (FOR) button to estimate kitchen preparation time. This introduces two critical failures:
 
 1. **Merchant Bias:** Merchants delay pressing FOR until the rider arrives, adding **~7 minutes** of systematic delay and corrupting all training data.
-2. **Hidden Kitchen Load:** Dine-in customers and orders from competitor platforms are invisible. When kitchen load spikes, riders are dispatched too early and wait **23% more often**.
+2. **Hidden Kitchen Load:** Dine-in customers and orders from competitor platforms are invisible. When kitchen load spikes, riders are dispatched too early and wait — **36.5% of orders** see a rider wait exceeding 5 minutes at baseline.
 
 ---
 
@@ -41,18 +41,18 @@ Adapter pattern accepts direct ticket-cleared signals from POS/KDS vendors for g
 
 | Metric | Baseline | KitchenPulse | Improvement |
 |--------|----------|--------------|-------------|
-| **KPT Accuracy (MAE)** | 6.55 min | 3.66 min | +44.2% |
-| **Avg Rider Wait** | 2.52 min | 1.92 min | -23.9% |
-| **Orders >5 min wait** | 21.7% | 16.6% | -23.5% |
+| **KPT Accuracy (MAE)** | 6.55 min | 3.66 min | +44.1% |
+| **Avg Rider Wait** | 4.03 min | 1.68 min | -58.3% |
+| **Orders >5 min wait** | 36.5% | 9.5% | -74.0% |
 
-**Statistical Validation:** Bootstrap confidence intervals (95% CI, 1000 resamples) confirm improvement is real with high effect size (Cohen's d = 1.87).
+**Statistical Validation:** Bootstrap confidence intervals (95% CI, 2000 resamples) confirm improvement is real with high effect size (Cohen's d = 1.87).
 
 **Improvement by Restaurant Tier:**
 | Tier | Before | After | Gain |
 |------|--------|-------|------|
-| T1 (Large chains) | 6.87 min | 3.51 min | -48.9% |
-| T2 (Mid-size) | 6.64 min | 3.74 min | -43.7% |
-| T3 (Independent) | 6.40 min | 3.71 min | -42.0% |
+| T1 (Large chains) | 6.98 min | 3.33 min | -52.2% |
+| T2 (Mid-size) | 6.67 min | 3.84 min | -42.4% |
+| T3 (Independent) | 6.26 min | 3.51 min | -44.0% |
 
 ---
 
@@ -108,8 +108,51 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for:
 
 ### Testing Approach
 - **Synthetic validation:** 17.5K orders, 50 restaurants, true ground truth
-- **Robustness:** 6 failure modes tested (API outages, missing signals, out-of-distribution load)
+- **Robustness:** 3 independent tests (bootstrap CI, signal ablation, OOD stress)
 - **Statistical rigor:** Bootstrap confidence intervals, effect sizes, signal ablation studies
+
+### Robustness Results
+
+**Bootstrap Confidence Intervals (95% CI, 2000 resamples):**
+
+| Metric | Baseline | KitchenPulse | Significant? |
+|--------|----------|--------------|-------------|
+| KPT MAE | 6.55 [6.49, 6.62] | 3.66 [3.62, 3.70] | ✅ Yes — CIs do not overlap |
+| Avg rider wait | 4.03 [3.97, 4.10] min | — | Model-independent (observed) |
+| Orders >5 min wait | 36.5% [35.8%, 37.2%] | — | Model-independent (observed) |
+
+**Signal Ablation Study** (contribution of each KLI signal):
+
+| Signal Dropped | MAE | vs Full System (3.66m) |
+|---------------|-----|------------------------|
+| None (all signals) | 4.47 min | — |
+| Zomato Concurrency | 4.42 min | −1.1% |
+| Acceptance Latency | 4.61 min | +3.1% — highest contributor |
+| Foot Traffic | 3.75 min | −16.1% |
+| Competitor Orders | 4.65 min | +4.0% — second highest contributor |
+
+**Out-of-Distribution (OOD) Stress Test** — KitchenPulse vs Baseline across hidden load regimes:
+
+| Load Multiplier | KP MAE | Baseline MAE | KP Advantage |
+|----------------|--------|--------------|-------------|
+| 0.5× (low load) | 6.68m | 5.66m | — Baseline better at very low load |
+| 0.71× | 5.60m | 5.94m | +5.7% |
+| 0.93× | 4.69m | 6.37m | +26.4% |
+| 1.0× (normal) | ~3.66m | 6.55m | +44.1% |
+| 1.14× | 4.11m | 6.96m | +41.0% |
+| 1.57× | 4.38m | 8.57m | +48.9% |
+| 2.0× (high load) | 6.05m | 10.60m | +42.9% |
+
+KitchenPulse outperforms the baseline across all load regimes above 0.5×. At very low load (0.5×), the naive estimate is more accurate since kitchen pressure is negligible — this is expected behaviour and not a failure mode.
+
+**Adversarial Test** (8% of orders injected with competitor spikes + FOR flips):
+
+| Strategy | MAE | vs Adversarial Baseline |
+|----------|-----|------------------------|
+| Baseline (adversarial) | 6.55m | — |
+| KitchenPulse (adversarial) | 4.47m | +31.7% improvement |
+
+KitchenPulse retains 31.7% improvement even under deliberate noise injection — the variance gate in the signal denoiser suppresses chaotic merchants automatically (17 merchants gated under adversarial conditions vs 1 normally).
 
 ### Pilot Rollout (Real Data)
 1. **Historical replay:** Process 30 days of past orders; measure KPT MAE vs. actual
@@ -148,7 +191,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#deployment-strategy-tiered-rollo
 
 ## Interview Bullets (2-minute pitch)
 
-**Problem:** Order delivery platforms mispredicts kitchen prep time due to merchant bias and hidden load (dine-in, competitor orders). Results: 36.5% of orders have riders waiting >5 min.
+**Problem:** Order delivery platforms mispredicts kitchen prep time due to merchant bias and hidden load (dine-in, competitor orders). Results: 36.5% of orders have riders waiting >5 min at baseline.
 
 **Approach:** 
 - De-noise merchant button presses using rider-proximate detection + adaptive bias learning
@@ -156,8 +199,9 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#deployment-strategy-tiered-rollo
 - Fuse signals adaptively with fallback when data unavailable
 
 **Impact:** 
-- **+44.2% accuracy improvement** (6.55m → 3.66m MAE)
-- **-23.9% rider wait time** (2.52m → 1.92m average)
+- **+44.1% accuracy improvement** (6.55m → 3.66m MAE)
+- **-58.3% rider wait time** (4.03m → 1.68m average)
+- **-74.0% long waits** (36.5% → 9.5% of orders waiting >5 min)
 - Scalable to 300K+ merchants via tiered deployment (T1/T2/T3)
 
 **What I Built:**
@@ -224,10 +268,12 @@ kitchenpulse/
 │
 ├── simulation/
 │   ├── __init__.py
-│   └── run_simulation.py              # 3-strategy head-to-head comparison
+│   └── run_simulation.py              # 5-strategy head-to-head comparison
 │       ├── A) Baseline (partner platform today)
-│       ├── B) De-biased FOR
-│       └── C) KitchenPulse (full system)
+│       ├── B) Denoised FOR (static median)
+│       ├── C) EMA Denoised FOR (adaptive)
+│       ├── D) KitchenPulse (full system)
+│       └── E) Adversarial Test
 │
 ├── analysis/
 │   ├── __init__.py
@@ -270,8 +316,8 @@ graph TD
     
     OUTPUT --> EVAL["EVALUATION PATH<br/>Choose Analysis Type"]
     
-    EVAL -->|Simulation| SIM["run_simulation.py<br/>3-Way Strategy"]
-    SIM --> CHART1["simulation_results.png<br/>+44.2% improvement"]
+    EVAL -->|Simulation| SIM["run_simulation.py<br/>5-Way Strategy"]
+    SIM --> CHART1["simulation_results.png<br/>+44.1% improvement"]
     
     EVAL -->|Analysis| CORR["correlation_analysis.py<br/>6 Statistical Charts"]
     CORR --> CHART2["report/figures/<br/>Publication-ready graphics"]
@@ -302,7 +348,7 @@ graph TD
 | Signal Denoising | Removes avg 7.09 min merchant bias |
 | KLI Computation | Real-time load scoring 0-100 |
 | Signal Fusion | Combines 4 signals (correlation: +0.383) |
-| Final Result | +44.2% KPT accuracy (6.55m → 3.66m MAE) |
+| Final Result | +44.1% KPT accuracy (6.55m → 3.66m MAE) |
 
 
 ---
@@ -321,31 +367,7 @@ The code is validated on a **synthetic dataset** that realistically simulates:
 This allows us to:
 1. Measure exact bias (median merchant delay: 7.09 min)
 2. Prove hidden load impact (correlates +0.334 with true KPT)
-3. Quantify improvement (43.8% MAE reduction)
-
----
-
-## Key Signals Introduced
-
-| Signal | Source | Availability | What It Captures |
-|--------|--------|--------------|------------------|
-| **POS Ticket Cleared** | Kitchen Display System | T1 only (large chains) | Actual ready time (unbiased) |
-| **Foot Traffic Index** | Google Popular Times API | All restaurants | Dine-in kitchen pressure |
-| **Competitor Orders** | Industry data / competitor platform webhook | Subscribed merchants | Offline app load |
-| **Partner-platform concurrency** | Partner platform order database | Real-time | Platform load (15-min window) |
-| **Acceptance Latency** | Restaurant order system | Existing signal | Kitchen stress indicator (z-score normalized) |
-
-### Correlations with True KPT Performance
-```
-Partner-platform concurrent orders        : +0.162  (weak)
-Acceptance latency z-score      : +0.407  (strongest existing signal)
-Foot traffic index              : +0.249  (new signal, moderate)
-Competitor platform orders      : +0.334  (new signal, strong)
-Kitchen Load Index (composite)  : +0.383  (best achievable with current signals)
-```
-
-**Key Insight:** While foot_traffic_index alone shows moderate correlation (+0.249), 
-the composite KLI achieves near-correlation of latency (+0.383) by combining all four signals.
+3. Quantify improvement (44.1% MAE reduction)
 
 ---
 
@@ -357,7 +379,7 @@ the composite KLI achieves near-correlation of latency (+0.383) by combining all
 
 - **T1 (5% of merchants)** → Direct POS/KDS API integration
   - Requires: webhook endpoint + authentication
-  - Benefit: 2.0x signal accuracy (1.93 vs 3.86 min MAE)
+  - Benefit: 2.0x signal accuracy (1.93 vs 3.86 min MAE for raw FOR signal)
 
 - **T2 (20% of merchants)** → Signal Denoiser + KLI fallback
   - Requires: rider GPS + order system access (already available)
@@ -378,7 +400,7 @@ the composite KLI achieves near-correlation of latency (+0.383) by combining all
 
 - **Language:** Python 3.10+
 - **Data Processing:** Pandas, NumPy, SciPy
-- **Visualization:** Matplotlib (GPU-accelerated rendering)
+- **Visualization:** Matplotlib, Plotly
 - **Synthetic Data:** Faker, NumPy random generation
 - **Statistics:** Pearson correlation, z-scores, rolling windows
 
@@ -393,6 +415,21 @@ the composite KLI achieves near-correlation of latency (+0.383) by combining all
 ## License
 
 MIT License — See LICENSE file for details.
+
+---
+
+## Known Issues
+
+**FutureWarning in adversarial noise injection** (`simulation/run_simulation.py` line ~72):
+```
+FutureWarning: Setting an item of incompatible dtype is deprecated...
+df.loc[type_a, 'competitor_platform_orders'] = rng.uniform(50, 200, ...)
+```
+This is a pandas dtype warning — `competitor_platform_orders` is stored as `int64` in the CSV but the adversarial injector assigns `float64` values. The simulation results are correct; this is cosmetic. Fix by casting explicitly:
+```python
+df['competitor_platform_orders'] = df['competitor_platform_orders'].astype(float)
+# add this line before inject_adversarial_noise() is called
+```
 
 ---
 

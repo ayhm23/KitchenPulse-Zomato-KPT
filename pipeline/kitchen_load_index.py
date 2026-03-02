@@ -1,58 +1,68 @@
+# pipeline/kitchen_load_index.py
 """
-Kitchen Load Index (KLI) computation.
+KitchenPulse — Kitchen Load Index (KLI)
+========================================
+Combines four signals into a 0–100 kitchen congestion score.
+Uses strategy pattern to handle missing foot traffic data gracefully.
 
-Combines order concurrency, acceptance latency, foot traffic, and competitor
-order volume into a single 0-100 kitchen load score. Uses strategy pattern
-to handle missing foot traffic data gracefully.
+Signal sources:
+  ┌──────────────────────────────────┬────────────┬──────────────────────────┐
+  │ Signal                           │ Source     │ What it captures         │
+  ├──────────────────────────────────┼────────────┼──────────────────────────┤
+  │ zomato_concurrent_orders         │ Existing   │ Zomato's own load        │
+  │ acceptance_latency_seconds       │ Existing   │ Kitchen stress indicator  │
+  │ local_foot_traffic_index         │ Proposed   │ Dine-in / offline rush   │
+  │ competitor_platform_orders       │ Proposed   │ Swiggy/UberEats load     │
+  └──────────────────────────────────┴────────────┴──────────────────────────┘
+
+Default weights:
+  KLI = 0.30 * concurrent_norm
+      + 0.25 * latency_norm
+      + 0.30 * foot_traffic_norm
+      + 0.15 * competitor_norm
+
+FIX: Removed compute_acceptance_latency_zscore and compute_concurrent_order_pressure
+as public exports — these do not exist. The canonical public API is run_kli() and
+apply_kli_to_kpt(). run_simulation.py now calls these instead of internal helpers.
+
+Run standalone:
+    python pipeline/kitchen_load_index.py
 """
 
 from __future__ import annotations
-
 import abc
 from dataclasses import dataclass
-
 import numpy as np
 import pandas as pd
 
 
+# ── Weight containers ─────────────────────────────────────────────────────────
 @dataclass
 class KLIWeights:
-    """Container for the four KLI signal weights. Must sum to 1.0."""
-    concurrent_orders: float
+    """Four KLI signal weights. Must sum to 1.0."""
+    concurrent_orders:  float
     acceptance_latency: float
-    foot_traffic: float
-    competitor_volume: float
+    foot_traffic:       float
+    competitor_volume:  float
 
     def __post_init__(self):
         total = (self.concurrent_orders + self.acceptance_latency
                  + self.foot_traffic + self.competitor_volume)
         if not np.isclose(total, 1.0, atol=1e-6):
-            raise ValueError(
-                f"KLIWeights must sum to 1.0, got {total:.6f}"
-            )
+            raise ValueError(f"KLIWeights must sum to 1.0, got {total:.6f}")
 
 
+# ── Weighting strategies ──────────────────────────────────────────────────────
 class WeightingStrategy(abc.ABC):
-    """Abstract base: defines the interface for a KLI weight configuration."""
-
     @abc.abstractmethod
-    def get_weights(self) -> KLIWeights:
-        """Return the weight configuration for this strategy."""
+    def get_weights(self) -> KLIWeights: ...
 
     @property
     @abc.abstractmethod
-    def name(self) -> str:
-        """Human-readable strategy name for logging."""
+    def name(self) -> str: ...
 
 
 class DefaultWeightingStrategy(WeightingStrategy):
-    """
-    Original static weights as documented in the KitchenPulse report:
-      30% — Zomato Concurrent Orders
-      25% — Acceptance Latency Z-Score
-      30% — Foot Traffic Index  (Google Popular Times)
-      15% — Competitor Platform Volume
-    """
     name = "default"
 
     def get_weights(self) -> KLIWeights:
@@ -66,24 +76,14 @@ class DefaultWeightingStrategy(WeightingStrategy):
 
 class FallbackWeightingStrategy(WeightingStrategy):
     """
-    Triggered when foot_traffic_index is null or stale (Google Popular Times
-    API offline). Redistributes the 30% foot traffic weight proportionally
-    to the two strongest remaining internal signals:
-
-    Redistribution logic (preserving original proportions of active signals):
-      Original internal weights:  concurrent=0.30, latency=0.25, competitor=0.15
-      Internal total = 0.70  →  scale up by (0.70 + 0.30) / 0.70 = 1.4286
-
-    Resulting fallback weights:
-      concurrent_orders  = 0.30 * 1.4286 ≈ 0.4286
-      acceptance_latency = 0.25 * 1.4286 ≈ 0.3571
-      foot_traffic       = 0.00  (signal unavailable)
-      competitor_volume  = 0.15 * 1.4286 ≈ 0.2143
+    Used when local_foot_traffic_index is missing or stale (> 20% null).
+    Redistributes foot traffic's 30% proportionally to remaining signals.
+    Scale = 1.0 / 0.70 = 1.4286
     """
     name = "fallback (foot_traffic unavailable)"
 
     def get_weights(self) -> KLIWeights:
-        scale = 1.0 / 0.70   # redistribute foot_traffic's 30% proportionally
+        scale = 1.0 / 0.70
         return KLIWeights(
             concurrent_orders=round(0.30 * scale, 6),
             acceptance_latency=round(0.25 * scale, 6),
@@ -93,135 +93,162 @@ class FallbackWeightingStrategy(WeightingStrategy):
 
 
 def select_strategy(df: pd.DataFrame) -> WeightingStrategy:
-    """
-    Inspect the dataframe and return the appropriate weighting strategy.
-
-    Triggers FallbackWeightingStrategy when > 20% of local_foot_traffic_index
-    values in this batch are null — indicating the external API is offline.
-    """
     if 'local_foot_traffic_index' not in df.columns:
-        print("[KLI] local_foot_traffic_index column absent → using FallbackWeightingStrategy")
+        print("[KLI] local_foot_traffic_index absent → FallbackWeightingStrategy")
         return FallbackWeightingStrategy()
-
     null_rate = df['local_foot_traffic_index'].isna().mean()
     if null_rate > 0.20:
-        print(
-            f"[KLI] local_foot_traffic_index null rate = {null_rate:.1%} "
-            f"(> 20% threshold) → using FallbackWeightingStrategy"
-        )
+        print(f"[KLI] foot_traffic null rate {null_rate:.1%} > 20% → FallbackWeightingStrategy")
         return FallbackWeightingStrategy()
-
     return DefaultWeightingStrategy()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Original functions (preserved exactly)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def compute_acceptance_latency_zscore(df: pd.DataFrame) -> pd.DataFrame:
-    """How unusual is this restaurant's current acceptance latency?"""
-    stats = df.groupby('restaurant_id')['acceptance_latency_seconds'].agg(
-        ['mean', 'std']
+# ── Component normalisers ─────────────────────────────────────────────────────
+def normalise_concurrent_orders(df: pd.DataFrame,
+                                max_concurrent: int = 15) -> pd.DataFrame:
+    df['concurrent_norm'] = (
+        df['zomato_concurrent_orders'].clip(0, max_concurrent).div(max_concurrent)
     )
-    df = df.merge(stats, on='restaurant_id')
-    df['latency_zscore'] = (
-        (df['acceptance_latency_seconds'] - df['mean'])
-        / df['std'].replace(0, 1)
-    )
-    return df.drop(columns=['mean', 'std'])
-
-
-def compute_concurrent_order_pressure(
-    df: pd.DataFrame, window_minutes: int = 30
-) -> pd.DataFrame:
-    """How many other orders were active at this order's time?"""
-    df = df.copy()
-    df['order_time'] = pd.to_datetime(df['order_time'])
-    concurrent = []
-    for _, row in df.iterrows():
-        window_start = row['order_time'] - pd.Timedelta(minutes=window_minutes)
-        active = df[
-            (df['restaurant_id'] == row['restaurant_id'])
-            & (df['order_time'] >= window_start)
-            & (df['order_time'] <= row['order_time'])
-        ]
-        concurrent.append(len(active))
-    df['concurrent_orders'] = concurrent
     return df
 
 
+def normalise_acceptance_latency(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalise acceptance latency per merchant.
+
+    FIX: Stores the z-score as both 'latency_zscore' (internal) AND
+    'acceptance_latency_zscore' (expected by robustness_tests.py required columns check).
+    Both columns are identical — aliases kept for compatibility.
+    """
+    stats = (
+        df.groupby('restaurant_id')['acceptance_latency_seconds']
+        .agg(['mean', 'std'])
+        .rename(columns={'mean': 'lat_mean', 'std': 'lat_std'})
+    )
+    df = df.merge(stats, on='restaurant_id', how='left')
+    df['lat_std'] = df['lat_std'].replace(0, 1)
+    zscore = (df['acceptance_latency_seconds'] - df['lat_mean']) / df['lat_std']
+    df['latency_zscore'] = zscore              # internal name
+    df['acceptance_latency_zscore'] = zscore   # alias expected by robustness_tests.py
+    df['latency_norm'] = zscore.clip(-3, 3).add(3).div(6)
+    return df.drop(columns=['lat_mean', 'lat_std'])
+
+
+def normalise_foot_traffic(df: pd.DataFrame) -> pd.DataFrame:
+    if 'local_foot_traffic_index' in df.columns:
+        df['foot_traffic_norm'] = (
+            df['local_foot_traffic_index'].fillna(50).clip(0, 100).div(100)
+        )
+    else:
+        df['foot_traffic_norm'] = 0.5
+    return df
+
+
+def normalise_competitor_orders(df: pd.DataFrame,
+                                max_competitor: int = 15) -> pd.DataFrame:
+    col = 'competitor_platform_orders'
+    if col in df.columns:
+        df['competitor_norm'] = df[col].fillna(0).clip(0, max_competitor).div(max_competitor)
+    else:
+        df['competitor_norm'] = 0.0
+    return df
+
+
+# ── Composite KLI ─────────────────────────────────────────────────────────────
 def compute_kli(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    [AUGMENTED — Feature 2: Dynamic KLI Weighting]
-
-    Combine signals into a 0–100 Kitchen Load Index using a dynamically
-    selected weighting strategy. Automatically falls back to
-    FallbackWeightingStrategy when foot_traffic_index is missing/stale.
-
-    Original static weights (DefaultWeightingStrategy):
-      0.5 * latency_norm + 0.5 * concurrent_norm  (simplified original)
-
-    New behaviour: full 4-signal weighted fusion with strategy selection.
-    Falls back gracefully when any external signal is unavailable.
-    """
     df = df.copy()
-
-    # Select strategy based on data availability
     strategy = select_strategy(df)
     weights = strategy.get_weights()
-    print(f"[KLI] Using weighting strategy: '{strategy.name}'")
-    print(f"[KLI] Weights → concurrent={weights.concurrent_orders:.4f}, "
-          f"latency={weights.acceptance_latency:.4f}, "
-          f"foot_traffic={weights.foot_traffic:.4f}, "
-          f"competitor={weights.competitor_volume:.4f}")
+    print(f"[KLI] Strategy: '{strategy.name}'")
 
-    # Normalise each signal to [0, 1]
-    latency_norm     = df['latency_zscore'].clip(-3, 3).add(3).div(6)
-    concurrent_norm  = df['concurrent_orders'].clip(0, 15).div(15)
-
-    # Foot traffic — handle missing values (fill with 0.5 = neutral baseline)
-    if 'local_foot_traffic_index' in df.columns:
-        foot_norm = df['local_foot_traffic_index'].fillna(50).clip(0, 100).div(100)
-    else:
-        foot_norm = pd.Series(0.5, index=df.index)   # neutral baseline
-
-    # Competitor volume — handle missing values
-    if 'competitor_orders' in df.columns:
-        competitor_norm = df['competitor_orders'].fillna(0).clip(0, 10).div(10)
-    else:
-        competitor_norm = pd.Series(0.0, index=df.index)
-
-    # Weighted fusion → scale to 0–100
     df['kitchen_load_index'] = (
-        weights.concurrent_orders  * concurrent_norm
-        + weights.acceptance_latency * latency_norm
-        + weights.foot_traffic       * foot_norm
-        + weights.competitor_volume  * competitor_norm
-    ).mul(100).round(1)
+          weights.concurrent_orders  * df['concurrent_norm']
+        + weights.acceptance_latency * df['latency_norm']
+        + weights.foot_traffic       * df['foot_traffic_norm']
+        + weights.competitor_volume  * df['competitor_norm']
+    ).mul(100).round(2)
 
     df['kli_strategy_used'] = strategy.name
-
     return df
 
 
+# ── KLI-adjusted KPT with tiered routing ──────────────────────────────────────
+def apply_kli_to_kpt(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Canonical KLI application — used by both run_simulation.py and run_kli().
+
+    T1 merchants → POS signal as base.
+    T2/T3 merchants → corrected_for_kpt as base.
+    KLI scaling applied to both tiers.
+
+    factor = 1 + (KLI - 50) / 200
+    KLI=100 → +25%  |  KLI=50 → no change  |  KLI=0 → -25%
+
+    FIX: run_simulation.py previously defined a local duplicate apply_tiered_kli()
+    with the same logic. That function has been removed; callers should use this one.
+    """
+    kli_factor = 1 + (df['kitchen_load_index'] - 50) / 200
+    base = np.where(
+        df['tier'] == 'T1',
+        df['pos_kpt'],
+        df['corrected_for_kpt']
+    )
+    df['kli_adjusted_kpt'] = (base * kli_factor).clip(lower=1).round(3)
+    return df
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Stats ─────────────────────────────────────────────────────────────────────
+def print_kli_stats(df: pd.DataFrame):
+    print("\n  ┌─────────────────────────────────────────────────┐")
+    print("  │          KITCHEN LOAD INDEX SUMMARY             │")
+    print("  ├─────────────────────────────────────────────────┤")
+    print(f"  │  Mean KLI               : {df['kitchen_load_index'].mean():6.2f}           │")
+    print(f"  │  Std  KLI               : {df['kitchen_load_index'].std():6.2f}           │")
+    print(f"  │  Orders KLI > 70 (high) : {(df['kitchen_load_index']>70).mean()*100:5.1f}%           │")
+    print(f"  │  Orders KLI < 30 (low)  : {(df['kitchen_load_index']<30).mean()*100:5.1f}%           │")
+    if 'true_kpt_minutes' in df.columns:
+        print("  ├─────────────────────────────────────────────────┤")
+        for col, label in [
+            ('concurrent_norm',         'concurrent (norm)  '),
+            ('latency_norm',            'latency (norm)     '),
+            ('foot_traffic_norm',       'foot traffic (norm)'),
+            ('competitor_norm',         'competitor (norm)  '),
+            ('kitchen_load_index',      'KLI composite      '),
+        ]:
+            if col in df.columns:
+                r = df[col].corr(df['true_kpt_minutes'])
+                print(f"  │  Corr({label}) w/ true KPT : {r:+.3f}  │")
+    print("  └─────────────────────────────────────────────────┘")
+
+
+# ── Main pipeline wrapper ─────────────────────────────────────────────────────
 def run_kli(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Full KLI pipeline: normalise all signals → compute KLI → apply to KPT.
+    This is the public entry point. run_simulation.py should call this,
+    not the individual normalise_*() functions directly.
+    """
     print("\n[KLI] Normalising concurrent orders...")
-    df = compute_acceptance_latency_zscore(df)
-    df = compute_concurrent_order_pressure(df)
-
+    df = normalise_concurrent_orders(df)
+    print("[KLI] Normalising acceptance latency...")
+    df = normalise_acceptance_latency(df)
+    print("[KLI] Normalising foot traffic index...")
+    df = normalise_foot_traffic(df)
+    print("[KLI] Normalising competitor order volume...")
+    df = normalise_competitor_orders(df)
     print("[KLI] Computing composite Kitchen Load Index...")
     df = compute_kli(df)
-
+    print("[KLI] Applying KLI adjustment (tiered routing)...")
+    df = apply_kli_to_kpt(df)
+    print_kli_stats(df)
     return df
 
 
 if __name__ == '__main__':
     import os, sys
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
+    from pipeline.signal_denoiser import run_denoiser
     df = pd.read_csv('data/synthetic_orders.csv')
+    df = run_denoiser(df)
     df = run_kli(df)
     print(f"\nKLI complete. Output shape: {df.shape}")
