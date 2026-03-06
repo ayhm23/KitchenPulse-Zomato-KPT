@@ -189,7 +189,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#deployment-strategy-tiered-rollo
 
 ---
 
-## Interview Bullets (2-minute pitch)
+## key points (2-minute pitch)
 
 **Problem:** Order delivery platforms mispredicts kitchen prep time due to merchant bias and hidden load (dine-in, competitor orders). Results: 36.5% of orders have riders waiting >5 min at baseline.
 
